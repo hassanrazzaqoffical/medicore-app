@@ -86,6 +86,11 @@ h3 { margin: 0 0 10px; }
   body * { visibility: hidden; }
   .receipt-print-area, .receipt-print-area * { visibility: visible; }
   .receipt-print-area { position: absolute; left: 0; top: 0; width: 100%; }
+  /* The app screens stay in the layout while hidden, which used to
+     spill blank pages after the slip. Take them out of the print
+     layout entirely — only the print area remains, so a document
+     is exactly one page (or one length of roll paper). */
+  .shell, .loginwrap, .toast-stack, .modal-back { display: none !important; }
 }
 
 /* ---- Platform (Super Admin) polish ---- */

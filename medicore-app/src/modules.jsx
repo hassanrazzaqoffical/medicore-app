@@ -198,7 +198,7 @@ export function ReceiptSlip({ brand, doc }) {
   const b = brand ?? { clinicName: "Clinic", tenant: null, clinic: {}, footer: {} };
   const clinic = b.clinic ?? {};
   const tenant = b.tenant ?? {};
-  const paper = ["80mm", "58mm", "A4"].includes(clinic.paper) ? clinic.paper : "80mm";
+  const paper = ["80mm", "58mm", "A4"].includes(doc?.paper) ? doc.paper : ["80mm", "58mm", "A4"].includes(clinic.paper) ? clinic.paper : "80mm";
   const headerContact = [clinic.phone || tenant.phone, clinic.email || tenant.email, clinic.website].filter(Boolean).join(" · ");
   const headerAddress = clinic.address || tenant.address || "";
   const f = b.footer ?? {};
@@ -265,7 +265,7 @@ export function PrintProvider({ tenantId, children }) {
   }, [doc]);
 
   const b = brand ?? { clinicName: "Clinic", tenant: null, clinic: {}, footer: {} };
-  const paper = ["80mm", "58mm", "A4"].includes((b.clinic ?? {}).paper) ? (b.clinic ?? {}).paper : "80mm";
+  const paper = ["80mm", "58mm", "A4"].includes(doc?.paper) ? doc.paper : ["80mm", "58mm", "A4"].includes((b.clinic ?? {}).paper) ? (b.clinic ?? {}).paper : "80mm";
 
   return (
     <PrintCtx.Provider value={{ printReceipt, brand: b }}>
@@ -4329,8 +4329,10 @@ export function monthLabel(ym) {
   return name ? `${name} ${y}` : String(ym ?? "");
 }
 export function paySlipDoc(name, role, r) {
+  const slipPaper = "A4";
   const net = r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0));
   return {
+    paper: slipPaper,
     title: "Salary Slip",
     big: rs(net),
     lines: [
