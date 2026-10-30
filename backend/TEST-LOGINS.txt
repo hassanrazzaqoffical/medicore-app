@@ -1,0 +1,27 @@
+TEST LOGINS — seed users (run the Seed SQL in this tab first)
+Password for every seed account: MediCore@123  — change it after first login.
+
+PLATFORM
+  super@medicore.pk        super_admin (no tenant — sees all clinics)
+
+AL-SHIFA MEDICAL CENTRE — LAHORE (tenant 11111111-1111-4111-8111-111111111111)
+  admin@alshifa.pk         clinic_admin
+  doctor@alshifa.pk        doctor (Dr. Ahmed Raza)
+  nurse@alshifa.pk         nurse
+  pharmacy@alshifa.pk      pharmacist
+  token@alshifa.pk         token_operator
+  accounts@alshifa.pk      accountant
+  hr@alshifa.pk            hr_manager
+  lab@alshifa.pk           lab_operator
+  tv@alshifa.pk            display (TV queue board — sign in on the TV browser)
+
+CITY CARE CLINIC — MULTAN (tenant 22222222-2222-4222-8222-222222222222)
+  admin@citycare.pk        clinic_admin
+  doctor@citycare.pk       doctor (Dr. Bilal Ahmed)
+  nurse@citycare.pk        nurse
+  pharmacy@citycare.pk     pharmacist
+  token@citycare.pk        token_operator
+  accounts@citycare.pk     accountant
+  hr@citycare.pk           hr_manager
+  lab@citycare.pk          lab_operator
+  tv@citycare.pk           display (TV queue board)
