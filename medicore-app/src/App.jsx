@@ -6,6 +6,7 @@ import {
   PlatformDashboard, PlatformTenants, PlatformPlans, PlatformSubscriptions, PlatformUsers,
   PlatformCatalog,
   PrintProvider, ToastProvider, moduleEnabled,
+  MyProfile,
 } from "./modules.jsx";
 
 /* PRIVACY LOCKDOWN: super_admin appears ONLY in the five platform
@@ -35,6 +36,7 @@ const NAV = [
   { key: "reports", label: "Reports", icon: "📈", roles: ["clinic_admin", "accountant"] },
   { key: "tv", label: "TV Queue Board", icon: "📺", roles: ["clinic_admin", "display"] },
   { key: "settings", label: "Settings / Users", icon: "⚙️", roles: ["clinic_admin"] },
+  { key: "myprofile", label: "My Profile", icon: "👤", roles: ["clinic_admin", "doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator"] },
   { key: "platform", label: "Platform Dashboard", icon: "📊", roles: ["super_admin"] },
   { key: "tenants", label: "Tenants", icon: "🏥", roles: ["super_admin"] },
   { key: "plans", label: "Plans", icon: "💳", roles: ["super_admin"] },
@@ -384,6 +386,7 @@ export default function App() {
     reports: <Reports />,
     tv: <Tokens profile={profile ?? {}} tvMode />,
     settings: <Settings profile={profile ?? {}} session={session} />,
+    myprofile: <MyProfile profile={profile ?? {}} />,
     platform: <PlatformDashboard />,
     tenants: <PlatformTenants session={session} />,
     plans: <PlatformPlans />,
@@ -415,6 +418,7 @@ export default function App() {
           <button key={n.key} className={`navitem ${activePage === n.key ? "active" : ""}`} onClick={() => setPage(n.key)}>{n.icon ? <span className="nic">{n.icon}</span> : null}{n.label}</button>
         ))}
         <div className="sideuser" style={{ marginTop: 18, padding: "10px", borderTop: "1px solid #164e5e" }}>
+          {profile?.avatar_url ? <img src={profile.avatar_url} alt="" style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", marginBottom: 6 }} /> : null}
           <div style={{ fontWeight: 700, color: "#fff" }}>{profile?.full_name ?? "…"}</div>
           <div style={{ fontSize: 12 }} className="muted">{profile?.email ?? ""}</div>
           <div style={{ fontSize: 12 }}>{profile?.role ?? ""}</div>

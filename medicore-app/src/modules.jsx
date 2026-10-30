@@ -699,9 +699,6 @@ export function Tokens({ profile, tvMode = false }) {
                 <td>{docName(t.doctor_id)}</td><td>{rs(t.fee_pkr)}</td>
                 <td><span className={`pill ${pill(t.status)}`}>{t.status}</span></td>
                 {!tvMode && <td><div className="row">
-                  {t.status === "waiting" && <button className="btn small" onClick={() => setStatus(t, "in_consultation")}>Call / Start</button>}
-                  {t.status === "in_consultation" && <button className="btn small" onClick={() => setStatus(t, "completed")}>Complete</button>}
-                  {(t.status === "waiting") && <button className="btn small ghost" onClick={() => setStatus(t, "skipped")}>Skip</button>}
                   {t.status === "waiting" && <button className="btn small ghost" onClick={() => openEditTok(t)}>Edit</button>}
                   {profile.role === "clinic_admin" && t.status !== "completed" && <button className="btn small danger" onClick={() => deleteToken(t)}>Delete</button>}
                   <button className="btn small ghost" onClick={() => printReceipt?.({
@@ -952,13 +949,13 @@ export function CareQueue({ profile, title }) {
                 <td><div className="row">
                   {t.status === "waiting" && <button className="btn small" onClick={() => setStatus(t, "in_consultation")}>Start</button>}
                   {t.status === "in_consultation" && <button className="btn small" onClick={() => setStatus(t, "completed")}>Complete</button>}
-                  {t.status === "in_consultation" && <button className="btn small ghost" onClick={() => setOpenId(openId === t.id ? null : t.id)}>✍️ Consult / Rx</button>}
+                  {(profile.role === "doctor" || profile.role === "clinic_admin") && t.status === "in_consultation" && <button className="btn small ghost" onClick={() => setOpenId(openId === t.id ? null : t.id)}>✍️ Consult / Rx</button>}
                 </div></td></tr> ); })}
-            {(data?.tokens ?? []).length === 0 && <tr><td colSpan={5} className="muted">Queue khaali hai.</td></tr>}
+            {(data?.tokens ?? []).length === 0 && <tr><td colSpan={5} className="muted">The queue is empty.</td></tr>}
           </tbody>
         </table>
       </div>
-      {(data?.tokens ?? []).filter((t) => t.id === openId).map((t) => <ConsultPanel key={t.id} profile={profile} token={t} patient={pName(t.patient_id)} onClose={() => setOpenId(null)} onSaved={() => { setOpenId(null); reload(); }} />)}
+      {(profile.role === "doctor" || profile.role === "clinic_admin") && (data?.tokens ?? []).filter((t) => t.id === openId).map((t) => <ConsultPanel key={t.id} profile={profile} token={t} patient={pName(t.patient_id)} onClose={() => setOpenId(null)} onSaved={() => { setOpenId(null); reload(); }} />)}
     </div>
   );
 }
@@ -1209,6 +1206,39 @@ export function HR({ profile, session }) {
   /* Salary / CNIC / doctor-share editing (staff_private is upserted). */
   const [salId, setSalId] = useState(null);
   const [salF, setSalF] = useState({ cnic: "", basic_salary: "", doctor_share_percent: "" });
+  const { printReceipt } = usePrint() ?? {};
+  const [slipFor, setSlipFor] = useState(null);
+  const [slipF, setSlipF] = useState({ month: "", basic: "", allowances: "0", deductions: "0", status: "paid", paid_at: "" });
+  const [slipRows, setSlipRows] = useState([]);
+  async function openSlip(st) {
+    setMsg({ err: "", ok: "" });
+    try {
+      const [priv, rows] = await Promise.all([
+        q(supabase.from("staff_private").select("*").eq("staff_id", st.id).maybeSingle()),
+        q(supabase.from("payroll").select("*").eq("staff_id", st.id).order("period_year", { ascending: false }).order("period_month", { ascending: false })),
+      ]);
+      const now = new Date();
+      setSlipF({ month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`, basic: priv?.basic_salary ?? "", allowances: "0", deductions: "0", status: "paid", paid_at: now.toISOString().slice(0, 10) });
+      setSlipRows(rows ?? []);
+      setSlipFor(st);
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function saveSlip() {
+    if (!slipFor) return;
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!slipF.month) throw new Error("Pick the salary month.");
+      const basic = Number(slipF.basic) || 0;
+      const allow = Number(slipF.allowances) || 0;
+      const ded = Number(slipF.deductions) || 0;
+      const [yy, mm] = slipF.month.split("-").map(Number);
+      const row = { tenant_id: profile.tenant_id, staff_id: slipFor.id, period_year: yy, period_month: mm, basic_salary: basic, allowances: allow, deductions: ded, late_deduction: 0, absent_deduction: 0, net_salary: basic + allow - ded, status: slipF.status, paid_at: slipF.status === "paid" ? (slipF.paid_at || null) : null };
+      const saved = await q(supabase.from("payroll").insert(row).select().single());
+      setMsg({ ok: `Salary slip saved for ${slipFor.full_name} — ${monthLabel(slipF.month)}.`, err: "" });
+      setSlipRows((r) => [saved, ...r]);
+      printReceipt?.(paySlipDoc(slipFor.full_name, slipFor.role, saved));
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
   function openSalary(st) {
     const pv = privMap[st.id] ?? {};
     setSalId(st.id);
@@ -1357,6 +1387,7 @@ export function HR({ profile, session }) {
                   </div></td>
                   <td><div className="row">
                     {(profile.role === "clinic_admin" || profile.role === "hr_manager") && <button className="btn small ghost" onClick={() => openSalary(st)}>Salary</button>}
+                    {(profile.role === "clinic_admin" || profile.role === "hr_manager") && <button className="btn small ghost" onClick={() => openSlip(st)}>Slip</button>}
                     <button className="btn small danger" onClick={() => toggleStaffActive(st)}>{st.is_active ? "Deactivate" : "Reactivate"}</button>
                   </div></td>
                 </tr>
@@ -1380,6 +1411,39 @@ export function HR({ profile, session }) {
         </table>
         <p className="muted">Salary/CNIC is visible only to HR, Accountant and Clinic Admin (database rule).</p>
       </div>
+      {slipFor && (
+        <div className="modal-back" onClick={() => setSlipFor(null)}>
+          <div className="modal-card" style={{ width: 560 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Salary slip — {slipFor.full_name}</h3>
+            <div className="grid cols-3">
+              <div><label>Month</label><input type="month" value={slipF.month} onChange={(e) => setSlipF({ ...slipF, month: e.target.value })} /></div>
+              <div><label>Basic salary (Rs)</label><input type="number" value={slipF.basic} onChange={(e) => setSlipF({ ...slipF, basic: e.target.value })} /></div>
+              <div><label>Allowances (Rs)</label><input type="number" value={slipF.allowances} onChange={(e) => setSlipF({ ...slipF, allowances: e.target.value })} /></div>
+              <div><label>Deductions (Rs)</label><input type="number" value={slipF.deductions} onChange={(e) => setSlipF({ ...slipF, deductions: e.target.value })} /></div>
+              <div><label>Status</label><select value={slipF.status} onChange={(e) => setSlipF({ ...slipF, status: e.target.value })}><option value="paid">Paid</option><option value="pending">Pending</option></select></div>
+              {slipF.status === "paid" && <div><label>Paid date</label><input type="date" value={slipF.paid_at} onChange={(e) => setSlipF({ ...slipF, paid_at: e.target.value })} /></div>}
+            </div>
+            <p style={{ margin: "10px 0 0" }}>Net pay: <b>{rs((Number(slipF.basic) || 0) + (Number(slipF.allowances) || 0) - (Number(slipF.deductions) || 0))}</b></p>
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn" onClick={saveSlip}>Save & Print slip</button>
+              <button className="btn ghost" onClick={() => setSlipFor(null)}>Close</button>
+            </div>
+            {slipRows.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <h4 style={{ margin: "0 0 6px" }}>Previous slips</h4>
+                <table>
+                  <thead><tr><th>Month</th><th>Net</th><th>Status</th><th></th></tr></thead>
+                  <tbody>
+                    {slipRows.map((r) => (
+                      <tr key={r.id}><td>{monthLabel(`${r.period_year}-${String(r.period_month).padStart(2, "0")}`)}</td><td>{rs(r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0)))}</td><td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{r.status}</span></td><td><button className="btn small ghost" onClick={() => printReceipt?.(paySlipDoc(slipFor.full_name, slipFor.role, r))}>Print</button></td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="card"><h3>Recent attendance</h3><GenericTable rows={(data?.att ?? []).map((a) => ({ date: a.attendance_date, status: a.status, method: a.method, check_in: a.check_in_at ? String(a.check_in_at).slice(11, 16) : "" }))} /></div>
     </div>
   );
@@ -1458,6 +1522,7 @@ export function Lab({ profile }) {
    unlike OPD/lab there is no database trigger for operations, so the
    app must NOT create invoices or payments for them. */
 export function Operations({ profile }) {
+  const canManageOp = profile.role === "clinic_admin" || profile.role === "doctor";
   const tid = profile.tenant_id;
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const { printReceipt } = usePrint() ?? {};
@@ -1539,6 +1604,7 @@ export function Operations({ profile }) {
     <div>
       <h2>Operations (OT)</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      {canManageOp && (
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>Schedule operation</h3>
         <div className="grid cols-3">
@@ -1574,6 +1640,7 @@ export function Operations({ profile }) {
           The operation fee is invoiced automatically when the operation is marked Completed.
         </p>
       </div>
+      )}
       <div className="card">
         <h3>Operations list</h3>
         {rows.length === 0 ? <p className="muted">No operations scheduled yet.</p> : (
@@ -1592,9 +1659,9 @@ export function Operations({ profile }) {
                     <td>{rs(o.fee_pkr)}</td>
                     <td><span className={`pill ${pill(o.status)}`}>{o.status.replace("_", " ")}</span></td>
                     <td><div className="row">
-                      {o.status === "scheduled" && <button className="btn small" onClick={() => setStatus(o, "in_progress")}>Start</button>}
-                      {o.status === "in_progress" && <button className="btn small" onClick={() => setStatus(o, "completed")}>Complete</button>}
-                      {(o.status === "scheduled" || o.status === "in_progress") && <button className="btn small ghost" onClick={() => setStatus(o, "cancelled")}>Cancel</button>}
+                      {canManageOp && o.status === "scheduled" && <button className="btn small" onClick={() => setStatus(o, "in_progress")}>Start</button>}
+                      {canManageOp && o.status === "in_progress" && <button className="btn small" onClick={() => setStatus(o, "completed")}>Complete</button>}
+                      {canManageOp && (o.status === "scheduled" || o.status === "in_progress") && <button className="btn small ghost" onClick={() => setStatus(o, "cancelled")}>Cancel</button>}
                       <button className="btn small ghost" onClick={() => printReceipt?.({
                         title: "Operation Slip",
                         lines: [
@@ -4250,6 +4317,183 @@ export function PlatformCatalog({ profile }) {
         </div>
       )}
       {data && <CatalogImport cats={cats} meds={meds} prods={prods} profile={profile} onDone={reload} />}
+    </div>
+  );
+}
+
+/* ---------------- Salary slips + My Profile ---------------- */
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+export function monthLabel(ym) {
+  const [y, m] = String(ym ?? "").split("-");
+  const name = MONTH_NAMES[Number(m) - 1];
+  return name ? `${name} ${y}` : String(ym ?? "");
+}
+export function paySlipDoc(name, role, r) {
+  const net = r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0));
+  return {
+    title: "Salary Slip",
+    big: rs(net),
+    lines: [
+      { k: "Employee", v: name },
+      { k: "Role", v: String(role ?? "").replaceAll("_", " ") },
+      { k: "Month", v: monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`) },
+      { k: "Basic salary", v: rs(r.basic_salary ?? 0) },
+      { k: "Allowances", v: rs(r.allowances ?? 0) },
+      { k: "Deductions", v: rs(r.deductions ?? 0) },
+      { k: "Net pay", v: rs(net) },
+      { k: "Status", v: r.status ?? "" },
+      ...(r.paid_at ? [{ k: "Paid date", v: String(r.paid_at).slice(0, 10) }] : []),
+    ],
+  };
+}
+
+/* Every staff member's own corner of the app: profile photo + name /
+   phone, and — through the my_salary_details() database function —
+   ONLY their own employment and salary record (joining date, basic
+   salary, allowances, and every payslip with its paid status). Other
+   people's salary data stays invisible, exactly as the database
+   rules already enforce everywhere else. */
+export function MyProfile({ profile }) {
+  const { printReceipt } = usePrint() ?? {};
+  const [me, setMe] = useState(null);
+  const [form, setForm] = useState({ full_name: "", phone: "" });
+  const [sal, setSal] = useState(undefined);
+  const [msg, setMsg] = useState({ err: "", ok: "" });
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await supabase.from("user_profiles").select("*").eq("id", profile.id).maybeSingle();
+        if (data) { setMe(data); setForm({ full_name: data.full_name ?? "", phone: data.phone ?? "" }); }
+      } catch { /* profile prop still renders */ }
+      const r = await supabase.rpc("my_salary_details");
+      setSal(r.error ? null : (r.data ?? null));
+    })();
+  }, [profile.id]);
+
+  async function saveProfile() {
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!form.full_name.trim()) throw new Error("Your name cannot be empty.");
+      await q(supabase.from("user_profiles").update({ full_name: form.full_name.trim(), phone: form.phone || null }).eq("id", profile.id));
+      setMe((m) => ({ ...(m ?? {}), full_name: form.full_name.trim(), phone: form.phone || null }));
+      setMsg({ ok: "Profile saved. Your new name appears in the sidebar the next time you sign in.", err: "" });
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+
+  async function onPhoto(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setMsg({ err: "", ok: "" });
+    setPhotoBusy(true);
+    try {
+      const url = await new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const max = 160;
+          const scale = Math.min(1, max / Math.max(img.width, img.height));
+          const c = document.createElement("canvas");
+          c.width = Math.max(1, Math.round(img.width * scale));
+          c.height = Math.max(1, Math.round(img.height * scale));
+          c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+          resolve(c.toDataURL("image/jpeg", 0.82));
+        };
+        img.onerror = reject;
+        img.src = URL.createObjectURL(file);
+      });
+      await q(supabase.from("user_profiles").update({ avatar_url: url }).eq("id", profile.id));
+      setMe((m) => ({ ...(m ?? {}), avatar_url: url }));
+      setMsg({ ok: "Profile photo saved. It appears in the sidebar the next time you sign in.", err: "" });
+    } catch (err) {
+      setMsg({ err: "Photo could not be saved yet — it needs a one-time setup by the clinic admin. Your name and phone can still be saved below.", ok: "" });
+    } finally { setPhotoBusy(false); }
+  }
+
+  async function removePhoto() {
+    setMsg({ err: "", ok: "" });
+    try {
+      await q(supabase.from("user_profiles").update({ avatar_url: null }).eq("id", profile.id));
+      setMe((m) => ({ ...(m ?? {}), avatar_url: null }));
+      setMsg({ ok: "Profile photo removed.", err: "" });
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+
+  const staff = sal?.staff ?? null;
+  const salary = sal?.salary ?? null;
+  const payroll = sal?.payroll ?? [];
+  const totalPaid = payroll.filter((r) => r.status === "paid").reduce((a, r) => a + (r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0))), 0);
+
+  return (
+    <div>
+      <h2>My Profile</h2>
+      <p className="muted" style={{ marginTop: 0 }}>Your own details — only you can see this page.</p>
+      <Notice err={msg.err} ok={msg.ok} />
+      <div className="grid cols-2">
+        <div className="card">
+          <h3>Profile</h3>
+          <div className="row" style={{ alignItems: "center", marginBottom: 12 }}>
+            {me?.avatar_url
+              ? <img src={me.avatar_url} alt="" style={{ width: 72, height: 72, borderRadius: "50%", objectFit: "cover" }} />
+              : <span className="brandmark" style={{ width: 72, height: 72, fontSize: 32, borderRadius: "50%" }}>👤</span>}
+            <div>
+              <label style={{ display: "inline-block", cursor: "pointer" }} className="btn small ghost">
+                {photoBusy ? "Saving…" : "Add / change photo"}
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={onPhoto} disabled={photoBusy} />
+              </label>
+              {me?.avatar_url && <button className="btn small ghost" style={{ marginLeft: 8 }} onClick={removePhoto}>Remove</button>}
+              <div className="muted" style={{ fontSize: 12, marginTop: 6 }}>A small photo is stored with your account.</div>
+            </div>
+          </div>
+          <div style={{ marginBottom: 10 }}><label>Full name</label><input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} /></div>
+          <div style={{ marginBottom: 10 }}><label>Phone</label><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} /></div>
+          <div style={{ marginBottom: 10 }}><label>Email (sign-in)</label><input value={me?.email ?? profile.email ?? ""} disabled /></div>
+          <div style={{ marginBottom: 12 }}><label>Role</label><input value={String(me?.role ?? profile.role ?? "").replaceAll("_", " ")} disabled /></div>
+          <button className="btn" onClick={saveProfile}>Save profile</button>
+        </div>
+        <div className="card">
+          <h3>My employment & salary</h3>
+          {sal === undefined && <p className="muted">Loading…</p>}
+          {sal === null && <p className="muted">Your salary view will appear here once the clinic completes a one-time setup. Please ask your clinic admin — it takes a minute.</p>}
+          {sal !== undefined && sal !== null && !staff && <p className="muted">No staff record is linked to your login yet. Your clinic admin can fix this from the HR screen.</p>}
+          {staff && (
+            <div>
+              <div className="r-line" style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span className="muted">Designation</span><b>{staff.designation || String(staff.role ?? "").replaceAll("_", " ")}</b></div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span className="muted">Joined on</span><b>{staff.joining_date ? String(staff.joining_date).slice(0, 10) : "—"}</b></div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span className="muted">Basic salary</span><b>{salary ? rs(salary.basic_salary ?? 0) : "Not set"}</b></div>
+              {salary?.doctor_share_percent != null && <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span className="muted">Doctor share</span><b>{salary.doctor_share_percent}%</b></div>}
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0" }}><span className="muted">Total paid to date</span><b>{rs(totalPaid)}</b></div>
+            </div>
+          )}
+        </div>
+      </div>
+      {staff && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <h3>My payslips</h3>
+          {payroll.length === 0
+            ? <p className="muted">No payslips yet. When Finance or HR generates your salary slip, it will appear here.</p>
+            : (
+              <table>
+                <thead><tr><th>Month</th><th>Basic</th><th>Allowances</th><th>Deductions</th><th>Net pay</th><th>Status</th><th>Paid date</th><th></th></tr></thead>
+                <tbody>
+                  {payroll.map((r) => (
+                    <tr key={r.id}>
+                      <td>{monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`)}</td>
+                      <td>{rs(r.basic_salary ?? 0)}</td>
+                      <td>{rs(r.allowances ?? 0)}</td>
+                      <td>{rs(r.deductions ?? 0)}</td>
+                      <td><b>{rs(r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0)))}</b></td>
+                      <td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{r.status}</span></td>
+                      <td>{r.paid_at ? String(r.paid_at).slice(0, 10) : "—"}</td>
+                      <td><button className="btn small ghost" onClick={() => printReceipt?.(paySlipDoc(staff.full_name, staff.role, r))}>Print</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+        </div>
+      )}
     </div>
   );
 }
