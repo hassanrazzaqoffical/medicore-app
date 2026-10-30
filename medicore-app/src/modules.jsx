@@ -280,6 +280,18 @@ export function PrintProvider({ tenantId, children }) {
   );
 }
 
+/* Stat cards row — every role's home screen opens with a summary
+   of ITS OWN work (never clinic-wide or other departments' data). */
+export function StatCards({ items }) {
+  return (
+    <div className="grid cols-4" style={{ marginBottom: 14 }}>
+      {items.map((it, i) => (
+        <div className="stat" key={i}><div className={`ic ${it.tone ?? ""}`}>{it.icon}</div><div><div className="lb">{it.label}</div><div className="vl">{it.value}</div></div></div>
+      ))}
+    </div>
+  );
+}
+
 /* ---------------- Dashboard ---------------- */
 export function Dashboard({ profile }) {
   const tid = profile.tenant_id;
@@ -573,6 +585,12 @@ export function Tokens({ profile, tvMode = false }) {
     <div>
       <h2>Token / OPD Queue</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      {!tvMode && <StatCards items={[
+        { icon: "🎫", label: "Tokens today", value: (data?.tokens ?? []).length },
+        { icon: "⏳", label: "Waiting", value: (data?.tokens ?? []).filter((t) => t.status === "waiting").length, tone: "amber" },
+        { icon: "🩺", label: "In consultation", value: (data?.tokens ?? []).filter((t) => t.status === "in_consultation").length, tone: "blue" },
+        { icon: "💰", label: "Token fees today", value: rs((data?.tokens ?? []).filter((t) => t.status !== "skipped").reduce((a, t) => a + (Number(t.fee_pkr) || 0), 0)), tone: "violet" },
+      ]} />}
       {docSkipNote && <div className="notice" style={{ border: "1px solid #f59e0b", background: "#fffbeb", borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 13 }}>{docSkipNote}</div>}
       {!tvMode && (
         <div className="card" style={{ marginBottom: 14 }}>
@@ -868,6 +886,12 @@ export function Patients({ profile }) {
     <div>
       <h2>Patients</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      <StatCards items={[
+        { icon: "🧑", label: "Registered patients", value: (data ?? []).length },
+        { icon: "🆕", label: "New today", value: (data ?? []).filter((x) => String(x.created_at ?? "").slice(0, 10) === todayStr()).length, tone: "blue" },
+        { icon: "📅", label: "New this month", value: (data ?? []).filter((x) => String(x.created_at ?? "").slice(0, 7) === todayStr().slice(0, 7)).length, tone: "violet" },
+        { icon: "⚠", label: "Allergies recorded", value: (data ?? []).filter((x) => x.allergies).length, tone: "amber" },
+      ]} />
       {canManage && (
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>New patient</h3>
@@ -921,11 +945,12 @@ export function CareQueue({ profile, title }) {
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [openId, setOpenId] = useState(null);
   const { data, reload } = useLoad(async () => {
-    const [tokens, patients] = await Promise.all([
+    const [tokens, patients, allToday] = await Promise.all([
       q(supabase.from("tokens").select("*").eq("token_date", todayStr()).in("status", ["waiting", "in_consultation"]).order("token_number")),
       q(supabase.from("patients").select("id,full_name,mr_number,age_years,gender,allergies")),
+      q(supabase.from("tokens").select("status").eq("token_date", todayStr())),
     ]);
-    return { tokens: tokens ?? [], patients: patients ?? [] };
+    return { tokens: tokens ?? [], patients: patients ?? [], allToday: allToday ?? [] };
   }, []);
   useEffect(() => { const i = setInterval(reload, 5000); return () => clearInterval(i); }, [reload]);
   async function setStatus(t, status) {
@@ -937,6 +962,12 @@ export function CareQueue({ profile, title }) {
     <div>
       <h2>{title}</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      <StatCards items={[
+        { icon: "🎫", label: "Tokens today", value: (data?.allToday ?? []).length },
+        { icon: "⏳", label: "Waiting", value: (data?.allToday ?? []).filter((t) => t.status === "waiting").length, tone: "amber" },
+        { icon: "🩺", label: "In consultation", value: (data?.allToday ?? []).filter((t) => t.status === "in_consultation").length, tone: "blue" },
+        { icon: "✅", label: "Completed today", value: (data?.allToday ?? []).filter((t) => t.status === "completed").length, tone: "violet" },
+      ]} />
       <div className="card">
         <table>
           <thead><tr><th>Token</th><th>Patient</th><th>Age/Gender</th><th>Status</th><th>Actions</th></tr></thead>
@@ -1031,6 +1062,12 @@ export function Pharmacy({ profile }) {
     <div>
       <h2>Pharmacy POS</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      <StatCards items={[
+        { icon: "💊", label: "Products in stock list", value: (data?.meds ?? []).length },
+        { icon: "📦", label: "Total stock (units)", value: (data?.batches ?? []).reduce((a, b) => a + (Number(b.quantity) || 0), 0), tone: "blue" },
+        { icon: "⚠", label: "Low / out of stock", value: (data?.meds ?? []).filter((m) => (data?.batches ?? []).filter((b) => b.medicine_id === m.id).reduce((a, b) => a + (Number(b.quantity) || 0), 0) <= 10).length, tone: "amber" },
+        { icon: "⏰", label: "Expiring in 30 days", value: (data?.batches ?? []).filter((b) => Number(b.quantity) > 0 && b.expiry_date >= todayStr() && b.expiry_date <= new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)).length, tone: "violet" },
+      ]} />
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>New sale</h3>
         <div className="row" style={{ gap: 8, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
@@ -1475,6 +1512,12 @@ export function Lab({ profile }) {
     <div>
       <h2>Lab Orders</h2>
       <Notice err={err} />
+      <StatCards items={[
+        { icon: "🧪", label: "Orders today", value: rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).length },
+        { icon: "⏳", label: "Pending", value: rows.filter((r) => r.status === "pending").length, tone: "amber" },
+        { icon: "✅", label: "Done / reported", value: rows.filter((r) => r.status !== "pending").length, tone: "blue" },
+        { icon: "💰", label: "Lab fees today", value: rs(rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).reduce((a, r) => a + (Number(r.fee_pkr) || 0), 0)), tone: "violet" },
+      ]} />
       <div className="card">
         {rows.length === 0 ? <p className="muted">No records yet.</p> : (
           <div style={{ overflowX: "auto" }}>
@@ -1604,6 +1647,12 @@ export function Operations({ profile }) {
     <div>
       <h2>Operations (OT)</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      <StatCards items={[
+        { icon: "🏥", label: "Operations today", value: rows.filter((o) => String(o.scheduled_at ?? "").slice(0, 10) === todayStr()).length },
+        { icon: "🗓️", label: "Scheduled", value: rows.filter((o) => o.status === "scheduled").length, tone: "amber" },
+        { icon: "🔄", label: "In progress", value: rows.filter((o) => o.status === "in_progress").length, tone: "blue" },
+        { icon: "✅", label: "Completed", value: rows.filter((o) => o.status === "completed").length, tone: "violet" },
+      ]} />
       {canManageOp && (
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>Schedule operation</h3>
