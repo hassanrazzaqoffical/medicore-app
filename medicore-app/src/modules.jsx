@@ -816,6 +816,7 @@ export function TvBoard({ profile }) {
 
 /* ---------------- Patients ---------------- */
 export function Patients({ profile }) {
+  const canManage = profile?.role === "clinic_admin";
   const tid = profile.tenant_id;
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [f, setF] = useState({ full_name: "", gender: "male", age_years: "", phone: "", cnic: "", blood_group: "", city: "", address: "" });
@@ -870,6 +871,7 @@ export function Patients({ profile }) {
     <div>
       <h2>Patients</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      {canManage && (
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>New patient</h3>
         <div className="grid cols-4">
@@ -884,7 +886,8 @@ export function Patients({ profile }) {
         </div>
         <div style={{ marginTop: 12 }}><button className="btn" onClick={add}>Add Patient</button></div>
       </div>
-      {editing && (
+      )}
+      {editing && canManage && (
         <div className="card" style={{ marginBottom: 14, border: "2px solid #0e7490" }}>
           <h3 style={{ marginTop: 0 }}>Edit patient — {editing.mr_number}</h3>
           <div className="grid cols-4">
@@ -908,7 +911,7 @@ export function Patients({ profile }) {
         <table>
           <thead><tr><th>MR #</th><th>Name</th><th>Gender</th><th>Age</th><th>Phone</th><th>City</th><th>Actions</th></tr></thead>
           <tbody>
-            {(data ?? []).map((p) => <tr key={p.id}><td>{p.mr_number}</td><td><b>{p.full_name}</b></td><td>{p.gender ?? ""}</td><td>{p.age_years ?? ""}</td><td>{p.phone ?? ""}</td><td>{p.city ?? ""}</td><td><div className="row"><button className="btn small ghost" onClick={() => startEdit(p)}>Edit</button><button className="btn small danger" onClick={() => deactivate(p)}>Delete</button></div></td></tr>)}
+            {(data ?? []).map((p) => <tr key={p.id}><td>{p.mr_number}</td><td><b>{p.full_name}</b></td><td>{p.gender ?? ""}</td><td>{p.age_years ?? ""}</td><td>{p.phone ?? ""}</td><td>{p.city ?? ""}</td><td>{canManage && <div className="row"><button className="btn small ghost" onClick={() => startEdit(p)}>Edit</button><button className="btn small danger" onClick={() => deactivate(p)}>Delete</button></div>}</td></tr>)}
           </tbody>
         </table>
       </div>
