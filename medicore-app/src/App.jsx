@@ -6,6 +6,7 @@ import {
   PlatformDashboard, PlatformTenants, PlatformPlans, PlatformSubscriptions, PlatformUsers,
   PlatformCatalog,
   PrintProvider, ToastProvider, moduleEnabled,
+  SvgIcon, AppIcon,
   MyProfile,
 } from "./modules.jsx";
 
@@ -79,7 +80,7 @@ function NotificationsBell({ profile }) {
   };
   return (
     <div style={{ position: "relative", marginTop: 10 }}>
-      <button className="btn small" style={{ width: "100%" }} onClick={toggle}>🔔 Notifications{unread > 0 ? ` · ${unread} new` : ""}</button>
+      <button className="btn small" style={{ width: "100%" }} onClick={toggle}><SvgIcon name="bell" size={15} />{" "}Notifications{unread > 0 ? ` · ${unread} new` : ""}</button>
       {open && (
         <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 300, maxHeight: 340, overflowY: "auto", background: "#fff", color: "#0f172a", borderRadius: 12, boxShadow: "0 18px 40px rgba(0,0,0,.35)", padding: 12, zIndex: 90, textAlign: "left" }}>
           <b>Notifications</b>
@@ -150,7 +151,7 @@ function Login() {
   return (
     <div className="loginwrap">
       <form className="logincard" onSubmit={signIn}>
-        <div style={{ fontSize: 26, fontWeight: 800 }}><span className="loginmark">✚</span>MediCore</div>
+        <div style={{ fontSize: 26, fontWeight: 800 }}><span className="loginmark"><SvgIcon name="plus" size={19} sw={2.6} /></span>MediCore</div>
         <p className="muted" style={{ marginTop: 2 }}>Medical POS & Clinic Management</p>
         {err && <div className="err" style={{ marginBottom: 10 }}>{err}</div>}
         {ok && <div className="ok" style={{ marginBottom: 10 }}>{ok}</div>}
@@ -456,10 +457,10 @@ export default function App() {
     <PrintProvider tenantId={profile?.tenant_id ?? null}>
     <div className="shell">
       <aside className="sidebar">
-        <div className="brand"><span className="brandmark">✚</span>MediCore<small>MEDICAL POS · CLINIC SUITE</small></div>
+        <div className="brand"><span className="brandmark"><SvgIcon name="plus" size={15} sw={2.6} /></span>MediCore<small>MEDICAL POS · CLINIC SUITE</small></div>
         {profile && <div className="navsec">{profile.role === "super_admin" ? "Platform" : "Clinic"}</div>}
         {nav.map((n) => (
-          <button key={n.key} className={`navitem ${activePage === n.key ? "active" : ""}`} onClick={() => setPage(n.key)}>{n.icon ? <span className="nic">{n.icon}</span> : null}{n.label}</button>
+          <button key={n.key} className={`navitem ${activePage === n.key ? "active" : ""}`} onClick={() => setPage(n.key)}>{n.icon ? <span className="nic"><AppIcon icon={n.icon} size={18} /></span> : null}{n.label}</button>
         ))}
         <div className="sideuser" style={{ marginTop: 18, padding: "10px", borderTop: "1px solid #164e5e" }}>
           {profile?.avatar_url ? <img src={profile.avatar_url} alt="" style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", marginBottom: 6 }} /> : null}

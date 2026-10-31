@@ -284,11 +284,70 @@ export function PrintProvider({ tenantId, children }) {
 
 /* Stat cards row — every role's home screen opens with a summary
    of ITS OWN work (never clinic-wide or other departments' data). */
+
+/* ---- Phase 2 (design review): ONE consistent SVG icon set, stroke
+   style, replacing emoji icons across the app. Call sites still pass
+   their familiar emoji; EMOJI_TO_ICON translates it into a vector
+   icon, and an unmapped emoji falls back to the character itself, so
+   nothing can break. Print/receipt CSS is untouched. */
+export const ICON_PATHS = {
+  home: (<><path d="M3.5 10.8 12 3.5l8.5 7.3" /><path d="M5.5 9.3V20a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9.3" /><path d="M9.8 21v-5.5h4.4V21" /></>),
+  ticket: (<><path d="M3 9V7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a3 3 0 0 0 0 6v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a3 3 0 0 0 0-6Z" /><path d="M13.5 7.2v1.8m0 3v1.8m0 3V19" /></>),
+  user: (<><circle cx="12" cy="8" r="4" /><path d="M4.8 20.5c.9-3.9 3.9-5.8 7.2-5.8s6.3 1.9 7.2 5.8" /></>),
+  users: (<><circle cx="9" cy="8.5" r="3.4" /><path d="M3.2 19.8c.6-3.1 2.9-4.9 5.8-4.9s5.2 1.8 5.8 4.9" /><path d="M15.5 5.4a3.4 3.4 0 0 1 0 6.3M17.6 15.2c1.9.6 3 2.1 3.4 4.6" /></>),
+  stethoscope: (<><path d="M5.5 3.5v5a5 5 0 0 0 10 0v-5" /><path d="M4 3.5h3M14 3.5h3" /><path d="M10.5 13.4v2.4a5.1 5.1 0 0 0 10.2 0v-1.5" /><circle cx="20.7" cy="11.8" r="1.9" /></>),
+  syringe: (<><path d="m18.5 2.5 3 3" /><path d="m17 7 3.5-3.5" /><path d="M19 9.5 9 19.5a2.12 2.12 0 0 1-3 0l-1-1a2.12 2.12 0 0 1 0-3L15 5.5" /><path d="m9.5 11 3 3" /><path d="m5.5 18.5-3.5 3.5" /><path d="m14.5 4 5 5" /></>),
+  pill: (<><path d="m10.8 20.2 9.4-9.4a5.07 5.07 0 0 0-7.2-7.2L3.6 13a5.07 5.07 0 0 0 7.2 7.2Z" /><path d="m8.5 8.5 7 7" /></>),
+  flask: (<><path d="M9.8 3h4.4" /><path d="M10.8 3v5.8L5 19a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 19L13.2 8.8V3" /><path d="M7.8 15h8.4" /></>),
+  hospital: (<><path d="M4.5 21V9L12 4l7.5 5v12" /><path d="M2.5 21h19" /><path d="M12 9.5v6M9 12.5h6" /></>),
+  banknote: (<><rect x="2.5" y="6" width="19" height="12" rx="2" /><circle cx="12" cy="12" r="2.7" /><path d="M6.2 9.6h.01M17.8 14.4h.01" /></>),
+  wallet: (<><path d="M3.5 7.5A2 2 0 0 1 5.5 5.5H18a1 1 0 0 1 1 1V8" /><path d="M3.5 7.5V18a2 2 0 0 0 2 2h14a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1H5.5a2 2 0 0 1-2-2.5Z" /><circle cx="16.6" cy="15" r="1.15" fill="currentColor" stroke="none" /></>),
+  card: (<><rect x="2.5" y="5" width="19" height="14.5" rx="2" /><path d="M2.5 10h19" /></>),
+  chartUp: (<><path d="M3.5 3.5v15A2 2 0 0 0 5.5 20.5h15" /><path d="m7 14.5 4-4 3.5 3.5 5.5-6" /><path d="M15 8h5v5" /></>),
+  chartDown: (<><path d="m3.5 6.5 5.5 5.5 3.5-3.5 5.5 6.5" /><path d="M13 15h5v-5" /></>),
+  chartBar: (<><path d="M3.5 3.5v15A2 2 0 0 0 5.5 20.5h15" /><path d="M8 16.5v-5M12.8 16.5v-9M17.6 16.5V9" /></>),
+  tv: (<><rect x="3" y="7.5" width="18" height="12.5" rx="2" /><path d="m8.5 3 3.5 3.7L15.5 3" /></>),
+  gear: (<><circle cx="12" cy="12" r="3.2" /><path d="M12 3v2.8M12 18.2V21M3 12h2.8M18.2 12H21M5.6 5.6l2 2M16.4 16.4l2 2M18.4 5.6l-2 2M7.6 16.4l-2 2" /></>),
+  calendar: (<><rect x="3.5" y="5" width="17" height="16" rx="2" /><path d="M3.5 10h17M8 3v4M16 3v4" /><path d="M7.5 14h3M13.5 14h3M7.5 17.2h3" /></>),
+  hourglass: (<><path d="M6 3h12M6 21h12" /><path d="M7.5 3v2.8L12 10l4.5-4.2V3" /><path d="M7.5 21v-2.8L12 14l4.5 4.2V21" /></>),
+  alarm: (<><circle cx="12" cy="13" r="7.5" /><path d="M12 9.8V13l2.4 1.8" /><path d="M5.2 3.2 2.8 5.6M18.8 3.2l2.4 2.4" /></>),
+  checkCircle: (<><circle cx="12" cy="12" r="8.8" /><path d="m8.4 12.3 2.5 2.5 4.7-5.3" /></>),
+  alert: (<><path d="M12 3.8 21.5 20h-19Z" /><path d="M12 10v4.3M12 17.3h.01" /></>),
+  box: (<><path d="M3.2 7.8 12 3l8.8 4.8v8.4L12 21l-8.8-4.8Z" /><path d="M3.2 7.8 12 12.6l8.8-4.8M12 12.6V21" /></>),
+  thermometer: (<><path d="M10 13.6V5a2 2 0 0 1 4 0v8.6a4.6 4.6 0 1 1-4 0Z" /><path d="M12 16.8v-6" /><circle cx="12" cy="17.6" r="1.3" fill="currentColor" stroke="none" /></>),
+  bed: (<><path d="M3 18.5V8" /><path d="M3 13.5h18v5" /><path d="M3 16h18" /><circle cx="7.6" cy="10.8" r="1.7" /><path d="M10.8 13.5v-.9a2 2 0 0 1 2-2H19a2 2 0 0 1 2 2v.9" /></>),
+  pen: (<><path d="M16.8 3.8a2.6 2.6 0 1 1 3.7 3.7L8 20l-5.2 1.3L4 16.1Z" /><path d="m14.5 6 3.5 3.5" /></>),
+  fileText: (<><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z" /><path d="M14 3v5h5" /><path d="M9 13h6M9 16.8h6" /></>),
+  refresh: (<><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6" /><path d="M20.8 3.2v4h-4" /></>),
+  moon: (<><path d="M19.8 13.8A8.3 8.3 0 1 1 10.2 4.2a6.8 6.8 0 0 0 9.6 9.6Z" /></>),
+  plusCircle: (<><circle cx="12" cy="12" r="8.8" /><path d="M12 8.2v7.6M8.2 12h7.6" /></>),
+  bell: (<><path d="M6.2 16.2v-4.7a5.8 5.8 0 0 1 11.6 0v4.7l1.4 2.6H4.8Z" /><path d="M10.2 21a2 2 0 0 0 3.6 0" /></>),
+  plus: (<><path d="M12 5v14M5 12h14" /></>),
+};
+export function SvgIcon({ name, size = 20, sw = 1.8 }) {
+  const body = ICON_PATHS[name];
+  if (!body) return null;
+  return (<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ verticalAlign: "-0.16em", flexShrink: 0 }}>{body}</svg>);
+}
+export const EMOJI_TO_ICON = {
+  "🏠": "home", "🎫": "ticket", "🧑": "user", "👤": "user", "👥": "users", "🧑‍🤝‍🧑": "users",
+  "🩺": "stethoscope", "💉": "syringe", "💊": "pill", "🧪": "flask", "🏥": "hospital",
+  "💰": "banknote", "💸": "wallet", "💳": "card", "📈": "chartUp", "📉": "chartDown", "📊": "chartBar",
+  "📺": "tv", "⚙️": "gear", "⚙": "gear", "📅": "calendar", "🗓️": "calendar", "🗓": "calendar",
+  "⏳": "hourglass", "⏰": "alarm", "✅": "checkCircle", "⚠": "alert", "⚠️": "alert",
+  "📦": "box", "🌡️": "thermometer", "🌡": "thermometer", "🛏️": "bed", "🛏": "bed",
+  "✍️": "pen", "✍": "pen", "📝": "fileText", "🔄": "refresh", "🌙": "moon", "🆕": "plusCircle",
+};
+export function AppIcon({ icon, size = 20 }) {
+  const n = EMOJI_TO_ICON[icon];
+  return n ? <SvgIcon name={n} size={size} /> : <span style={{ fontSize: Math.round(size * 0.92) }}>{icon}</span>;
+}
+
 export function StatCards({ items }) {
   return (
     <div className="grid cols-4" style={{ marginBottom: 14 }}>
       {items.map((it, i) => (
-        <div className="stat" key={i}><div className={`ic ${it.tone ?? ""}`}>{it.icon}</div><div><div className="lb">{it.label}</div><div className="vl">{it.value}</div></div></div>
+        <div className="stat" key={i}><div className={`ic ${it.tone ?? ""}`}><AppIcon icon={it.icon} size={21} /></div><div><div className="lb">{it.label}</div><div className="vl">{it.value}</div></div></div>
       ))}
     </div>
   );
@@ -896,7 +955,7 @@ export function TvBoard({ profile }) {
     <div className="tv2">
       <div className="tv2-head">
         <div className="tv2-brand">
-          <span className="brandmark" style={{ width: 44, height: 44, fontSize: 24, borderRadius: 12 }}>✚</span>
+          <span className="brandmark" style={{ width: 44, height: 44, fontSize: 24, borderRadius: 12 }}><SvgIcon name="plus" size={24} sw={2.8} /></span>
           <div>
             <div className="tv2-clinic">{data?.clinic || "MediCore"}</div>
             <div className="tv2-sub">OPD QUEUE · LIVE</div>
