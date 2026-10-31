@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, useMemo } from "react";
 import { supabase, SUPABASE_URL } from "./supabaseClient.js";
+import QRCode from "qrcode";
+import jsQR from "jsqr";
 import {
   HOSPITAL_TYPES, departmentsForTypes, BUILTIN_LAB_PRICES, STANDARD_LAB_FEE, labPriceInfo,
   specialtyTemplateFor,
@@ -941,16 +943,18 @@ export function Patients({ profile }) {
 }
 
 /* ---------------- Doctor / Nursing queue ---------------- */
-export function CareQueue({ profile, title }) {
+export function CareQueue({ profile, title, variant = "doctor" }) {
+  const isDoc = variant === "doctor";
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [openId, setOpenId] = useState(null);
   const { data, reload } = useLoad(async () => {
-    const [tokens, patients, allToday] = await Promise.all([
+    const [tokens, patients, allToday, completed] = await Promise.all([
       q(supabase.from("tokens").select("*").eq("token_date", todayStr()).in("status", ["waiting", "in_consultation"]).order("token_number")),
       q(supabase.from("patients").select("id,full_name,mr_number,age_years,gender,allergies")),
       q(supabase.from("tokens").select("status").eq("token_date", todayStr())),
+      q(supabase.from("tokens").select("*").eq("token_date", todayStr()).eq("status", "completed").order("updated_at", { ascending: false })),
     ]);
-    return { tokens: tokens ?? [], patients: patients ?? [], allToday: allToday ?? [] };
+    return { tokens: tokens ?? [], patients: patients ?? [], allToday: allToday ?? [], completed: completed ?? [] };
   }, []);
   useEffect(() => { const i = setInterval(reload, 5000); return () => clearInterval(i); }, [reload]);
   async function setStatus(t, status) {
@@ -961,12 +965,13 @@ export function CareQueue({ profile, title }) {
   return (
     <div>
       <h2>{title}</h2>
+      <p className="muted" style={{ marginTop: -6 }}>{isDoc ? "Consultation room — open Consult / Rx on a patient to record diagnosis, prescription and lab orders." : "Nursing station — start patients in when they are called, and complete them when the visit is done."}</p>
       <Notice err={msg.err} ok={msg.ok} />
       <StatCards items={[
         { icon: "🎫", label: "Tokens today", value: (data?.allToday ?? []).length },
         { icon: "⏳", label: "Waiting", value: (data?.allToday ?? []).filter((t) => t.status === "waiting").length, tone: "amber" },
         { icon: "🩺", label: "In consultation", value: (data?.allToday ?? []).filter((t) => t.status === "in_consultation").length, tone: "blue" },
-        { icon: "✅", label: "Completed today", value: (data?.allToday ?? []).filter((t) => t.status === "completed").length, tone: "violet" },
+        { icon: "✅", label: isDoc ? "Consulted today" : "Completed today", value: (data?.allToday ?? []).filter((t) => t.status === "completed").length, tone: "violet" },
       ]} />
       <div className="card">
         <table>
@@ -980,13 +985,30 @@ export function CareQueue({ profile, title }) {
                 <td><div className="row">
                   {t.status === "waiting" && <button className="btn small" onClick={() => setStatus(t, "in_consultation")}>Start</button>}
                   {t.status === "in_consultation" && <button className="btn small" onClick={() => setStatus(t, "completed")}>Complete</button>}
-                  {(profile.role === "doctor" || profile.role === "clinic_admin") && t.status === "in_consultation" && <button className="btn small ghost" onClick={() => setOpenId(openId === t.id ? null : t.id)}>✍️ Consult / Rx</button>}
+                  {isDoc && t.status === "in_consultation" && <button className="btn small ghost" onClick={() => setOpenId(openId === t.id ? null : t.id)}>✍️ Consult / Rx</button>}
                 </div></td></tr> ); })}
             {(data?.tokens ?? []).length === 0 && <tr><td colSpan={5} className="muted">The queue is empty.</td></tr>}
           </tbody>
         </table>
       </div>
-      {(profile.role === "doctor" || profile.role === "clinic_admin") && (data?.tokens ?? []).filter((t) => t.id === openId).map((t) => <ConsultPanel key={t.id} profile={profile} token={t} patient={pName(t.patient_id)} onClose={() => setOpenId(null)} onSaved={() => { setOpenId(null); reload(); }} />)}
+      {isDoc && (data?.tokens ?? []).filter((t) => t.id === openId).map((t) => <ConsultPanel key={t.id} profile={profile} token={t} patient={pName(t.patient_id)} onClose={() => setOpenId(null)} onSaved={() => { setOpenId(null); reload(); }} />)}
+      {!isDoc && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <h3 style={{ marginTop: 0 }}>Completed today</h3>
+          {(data?.completed ?? []).length === 0 ? <p className="muted">No completed visits yet today.</p> : (
+            <table>
+              <thead><tr><th>Token</th><th>Patient</th><th>Age/Gender</th><th>Finished at</th></tr></thead>
+              <tbody>
+                {(data?.completed ?? []).map((t) => { const p = pName(t.patient_id); return (
+                  <tr key={t.id}><td><b>#{t.token_number}</b></td>
+                    <td>{p?.full_name ?? "—"} <span className="muted">{p?.mr_number ?? ""}</span></td>
+                    <td>{p?.age_years ?? ""} / {p?.gender ?? ""}</td>
+                    <td>{t.updated_at ? new Date(t.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "—"}</td></tr> ); })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -1000,6 +1022,9 @@ export function Pharmacy({ profile }) {
   const [fefoNote, setFefoNote] = useState("");
   const [lastSale, setLastSale] = useState(null);
   const { printReceipt } = usePrint() ?? {};
+  const [batchFor, setBatchFor] = useState(null);
+  const [bf, setBf] = useState({ batch_no: "", quantity: "", expiry_date: "", purchase_price: "", sale_price: "" });
+  const setB = (k) => (e) => setBf({ ...bf, [k]: e.target.value });
   const { data, reload } = useLoad(async () => {
     const [meds, batches] = await Promise.all([
       q(supabase.from("medicines").select("*").eq("is_active", true).order("name")),
@@ -1007,6 +1032,28 @@ export function Pharmacy({ profile }) {
     ]);
     return { meds: meds ?? [], batches: batches ?? [] };
   }, [tid]);
+  /* A medicine only becomes sellable once it has a batch with quantity.
+     Medicines added from the catalog without a batch get their first
+     batch here, from the Stock list. */
+  async function addBatch(m) {
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!bf.batch_no.trim()) throw new Error("Enter a batch number.");
+      if (!Number(bf.quantity)) throw new Error("Enter the batch quantity.");
+      if (!bf.expiry_date) throw new Error("Enter the batch expiry date — every batch needs one (used for expiry alerts and first-expiry-first-out selling).");
+      await q(supabase.from("medicine_batches").insert({
+        tenant_id: tid, medicine_id: m.id, batch_no: bf.batch_no.trim(),
+        quantity: Number(bf.quantity), expiry_date: bf.expiry_date || null,
+        purchase_price: bf.purchase_price === "" ? (m.purchase_price ?? null) : Number(bf.purchase_price),
+        sale_price: bf.sale_price === "" ? (m.sale_price ?? null) : Number(bf.sale_price),
+        received_date: todayStr(),
+      }));
+      setMsg({ err: "", ok: `Batch ${bf.batch_no.trim()} added for ${m.name} — it can now be sold.` });
+      setBatchFor(null);
+      setBf({ batch_no: "", quantity: "", expiry_date: "", purchase_price: "", sale_price: "" });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
   const medName = (id) => data?.meds.find((m) => m.id === id);
   const batch = data?.batches.find((b) => b.id === sel.batch_id);
   const price = batch ? Number(batch.sale_price ?? medName(batch.medicine_id)?.sale_price ?? 0) : 0;
@@ -1107,7 +1154,7 @@ export function Pharmacy({ profile }) {
           </div>
         )}
       </div>
-      <PharmacyCatalogAdd profile={profile} tenantMeds={data?.meds ?? []} onAdded={reload} />
+      <PharmacyCatalogAdd profile={profile} tenantMeds={data?.meds ?? []} tenantBatches={data?.batches ?? []} onAdded={reload} />
       <div className="card">
         <h3>Stock</h3>
         <table>
@@ -1117,37 +1164,215 @@ export function Pharmacy({ profile }) {
               <tr key={b.id}><td><b>{m?.name}</b> <span className="muted">{m?.strength ?? ""}</span></td><td>{b.batch_no}</td>
                 <td>{b.expiry_date} {expired && <span className="pill red">expired</span>} {expiring && <span className="pill amber">expiring</span>}</td>
                 <td>{b.quantity} {low && <span className="pill amber">low</span>}</td><td>{rs(b.sale_price ?? m?.sale_price ?? 0)}</td><td></td></tr> ); })}
+            {(data?.meds ?? []).filter((m) => !(data?.batches ?? []).some((b) => b.medicine_id === m.id)).map((m) => (
+              <tr key={m.id}><td><b>{m.name}</b> <span className="muted">{m.strength ?? ""}</span></td><td>—</td>
+                <td>—</td><td><span className="pill amber">no stock yet</span></td><td>{rs(m.sale_price ?? 0)}</td>
+                <td><button className="btn small" onClick={() => { setBatchFor(batchFor === m.id ? null : m.id); setBf({ batch_no: "", quantity: "", expiry_date: "", purchase_price: "", sale_price: "" }); }}>＋ Add batch</button></td></tr> ))}
+            {(data?.batches ?? []).length === 0 && (data?.meds ?? []).length === 0 && <tr><td colSpan={6} className="muted">No medicines yet — add one from the catalog above.</td></tr>}
           </tbody>
         </table>
+        {(() => { const m = (data?.meds ?? []).find((x) => x.id === batchFor); if (!m) return null; return (
+          <div style={{ marginTop: 12, borderTop: "1px solid #e2e8f0", paddingTop: 12 }}>
+            <b>Add batch — {m.name}</b>
+            <div className="grid cols-4" style={{ marginTop: 8 }}>
+              <div><label>Batch no *</label><input value={bf.batch_no} onChange={setB("batch_no")} placeholder="e.g. PND-2026-01" /></div>
+              <div><label>Quantity *</label><input type="number" value={bf.quantity} onChange={setB("quantity")} /></div>
+              <div><label>Expiry date *</label><input type="date" value={bf.expiry_date} onChange={setB("expiry_date")} /></div>
+              <div><label>Sale price (Rs)</label><input type="number" value={bf.sale_price} onChange={setB("sale_price")} placeholder={m.sale_price ?? ""} /></div>
+              <div><label>Purchase price (Rs)</label><input type="number" value={bf.purchase_price} onChange={setB("purchase_price")} placeholder={m.purchase_price ?? ""} /></div>
+            </div>
+            <div className="row" style={{ gap: 8, marginTop: 10 }}>
+              <button className="btn" onClick={() => addBatch(m)}>Save batch</button>
+              <button className="btn ghost" onClick={() => setBatchFor(null)}>Cancel</button>
+            </div>
+          </div> ); })()}
       </div>
     </div>
   );
 }
 
-/* ---------------- Finance ---------------- */
-export function Finance() {
+/* ---------------- QR badge helpers ----------------
+   Attendance QR payload is simply the staff member's id (from
+   staff_directory). QRCode renders it; jsQR decodes it in browsers
+   without BarcodeDetector, so scanning works everywhere. */
+export function useQrUrl(text) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    let on = true;
+    if (text) QRCode.toDataURL(String(text), { width: 260, margin: 1 }).then((u) => { if (on) setUrl(u); }).catch(() => {});
+    else setUrl("");
+    return () => { on = false; };
+  }, [text]);
+  return url;
+}
+const escHtml = (t) => String(t ?? "").replace(/[<>&"]/g, "");
+export function printQrBadge(name, sub, url, extra = {}) {
+  const w = window.open("", "_blank", "width=430,height=640");
+  if (!w) return;
+  const clinic = escHtml(extra.clinic || "MediCore Clinic");
+  const photo = extra.photo ? `<img src="${extra.photo}" style="width:84px;height:84px;border-radius:50%;object-fit:cover;border:3px solid #0f766e;margin-top:14px"/>` : "";
+  w.document.write(`<html><head><title>Employee ID Card</title></head><body style="font-family:sans-serif;margin:0;padding:18px;background:#f1f5f9"><div style="max-width:340px;margin:0 auto;background:#fff;border:1.5px solid #0f766e;border-radius:16px;overflow:hidden;text-align:center"><div style="background:#0b3b4d;color:#fff;padding:14px 10px"><div style="font-size:19px;font-weight:800">${clinic}</div><div style="font-size:11px;letter-spacing:2px;opacity:.85">EMPLOYEE ID CARD</div></div>${photo}<h3 style="margin:10px 0 2px;font-size:19px">${escHtml(name)}</h3><p style="color:#555;margin:0 0 6px">${escHtml(String(sub ?? "").replaceAll("_", " "))}</p><img src="${url}" style="width:200px;height:200px"/><p style="color:#888;font-size:11.5px;padding:0 22px 16px;margin:4px 0 0">Show this code at the HR desk — your attendance is marked by scanning it. If found, please return to the clinic.</p></div><script>window.onload=function(){setTimeout(function(){window.print()},250)}<\/script></body></html>`);
+  w.document.close();
+}
+
+/* Salary workflow: HR prepares the slip (payroll status "draft" =
+   pending approval), Finance approves it to "paid". Notifications are
+   best-effort rows in the notifications table — the workflow never
+   blocks if one cannot be written. */
+export async function notify(tenantId, { userId = null, role = null, type, title, message, refType = null, refId = null }) {
+  try {
+    await supabase.from("notifications").insert({
+      tenant_id: tenantId, user_id: userId, target_role: role, type, title, message,
+      reference_type: refType, reference_id: refId,
+    });
+  } catch { /* best-effort */ }
+}
+export const payrollStatusLabel = (st) => (st === "draft" ? "pending approval" : st);
+
+/* ---------------- Finance ----------------
+   Complete accounts setup: a Debit / Credit cash book with a
+   running balance (credits = payments received against invoices,
+   debits = clinic expenses), an Add expense form, and the invoice
+   register. Accountant + clinic_admin; expenses verified writable
+   by the accountant role. */
+export function Finance({ profile }) {
+  const tid = profile?.tenant_id;
   const { printReceipt } = usePrint() ?? {};
-  const { data } = useLoad(async () => {
-    const [inv, pay, exp] = await Promise.all([
+  const [msg, setMsg] = useState({ err: "", ok: "" });
+  const [ef, setEf] = useState({ title: "", category: "Supplies", amount: "", expense_date: todayStr(), payment_method: "cash", notes: "" });
+  const setE = (k) => (e) => setEf({ ...ef, [k]: e.target.value });
+  const { data, reload } = useLoad(async () => {
+    const [inv, pay, exp, payroll, dir] = await Promise.all([
       q(supabase.from("invoices").select("*").order("created_at", { ascending: false }).limit(200)),
-      q(supabase.from("payments").select("*").order("created_at", { ascending: false }).limit(100)),
-      q(supabase.from("expenses").select("*").order("created_at", { ascending: false }).limit(100)),
+      q(supabase.from("payments").select("*").order("created_at", { ascending: false }).limit(300)),
+      q(supabase.from("expenses").select("*").order("created_at", { ascending: false }).limit(300)),
+      q(supabase.from("payroll").select("*").order("created_at", { ascending: false }).limit(200)),
+      q(supabase.from("staff_directory").select("id,full_name,user_profile_id,role")),
     ]);
-    return { inv: inv ?? [], pay: pay ?? [], exp: exp ?? [] };
+    return { inv: inv ?? [], pay: pay ?? [], exp: exp ?? [], payroll: payroll ?? [], dir: dir ?? [] };
   }, []);
-  const paid = (data?.inv ?? []).filter((i) => i.status === "paid");
-  const sum = paid.reduce((s, i) => s + Number(i.total_amount || 0), 0);
-  const byType = {};
-  paid.forEach((i) => { byType[i.invoice_type] = (byType[i.invoice_type] ?? 0) + Number(i.total_amount || 0); });
+  const invById = new Map((data?.inv ?? []).map((x) => [x.id, x]));
+  const staffById = new Map((data?.dir ?? []).map((x) => [x.id, x]));
+  const salaryDebits = (data?.payroll ?? []).filter((r) => r.status === "paid").map((r) => ({
+    key: "s" + r.id, date: String(r.paid_at ?? r.updated_at ?? "").slice(0, 10), ts: new Date(r.paid_at ?? r.updated_at ?? 0).getTime() || 0,
+    desc: `Salary — ${staffById.get(r.staff_id)?.full_name ?? "Staff"} (${monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`)})`,
+    sub: "", via: "Payroll", credit: 0, debit: Number(r.net_salary) || 0,
+  }));
+  const pendingSlips = (data?.payroll ?? []).filter((r) => r.status === "draft");
+  /* Finance is the ONLY step that pays a salary: HR prepares the slip
+     (draft), Finance approves here -> paid, and both HR and the
+     employee are notified on their logins. */
+  async function approveSlip(r) {
+    setMsg({ err: "", ok: "" });
+    try {
+      await q(supabase.from("payroll").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", r.id));
+      const staff = staffById.get(r.staff_id);
+      const label = `${staff?.full_name ?? "Staff"} — ${monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`)}`;
+      if (staff?.user_profile_id) notify(tid, { userId: staff.user_profile_id, type: "salary_paid", title: "Your salary has been paid", message: `${monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`)} salary of ${rs(r.net_salary ?? 0)} has been paid by Finance. Your payslip is in My Profile.`, refType: "payroll", refId: r.id });
+      notify(tid, { role: "hr_manager", type: "salary_paid", title: `Salary paid — ${label}`, message: `Net ${rs(r.net_salary ?? 0)} was marked paid by Finance.`, refType: "payroll", refId: r.id });
+      notify(tid, { role: "clinic_admin", type: "salary_paid", title: `Salary paid — ${label}`, message: `Net ${rs(r.net_salary ?? 0)} was marked paid by Finance.`, refType: "payroll", refId: r.id });
+      setMsg({ err: "", ok: `Salary paid: ${label} — ${rs(r.net_salary ?? 0)}. HR and the employee have been notified.` });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  const credits = (data?.pay ?? []).map((p) => { const inv = invById.get(p.invoice_id); return {
+    key: "p" + p.id, date: String(p.paid_at ?? p.created_at ?? "").slice(0, 10), ts: new Date(p.paid_at ?? p.created_at ?? 0).getTime() || 0,
+    desc: inv ? `${inv.invoice_type.toUpperCase()} fee — ${inv.invoice_number}` : "Payment received", sub: p.reference_no ?? "",
+    via: p.payment_method ?? "cash", credit: Number(p.amount) || 0, debit: 0,
+  }; });
+  const debits = (data?.exp ?? []).map((x) => ({
+    key: "e" + x.id, date: String(x.expense_date ?? x.created_at ?? "").slice(0, 10), ts: new Date(x.expense_date ?? x.created_at ?? 0).getTime() || 0,
+    desc: x.title ?? "Expense", sub: x.notes ?? "", via: x.category ?? "",
+    credit: 0, debit: Number(x.amount) || 0,
+  }));
+  let bal = 0;
+  const ledgerAsc = [...credits, ...debits, ...salaryDebits].sort((a, b) => a.ts - b.ts).map((e) => { bal += e.credit - e.debit; return { ...e, balance: bal }; });
+  const ledger = [...ledgerAsc].reverse().slice(0, 120);
+  const totCredit = credits.reduce((a, e) => a + e.credit, 0);
+  const totDebit = debits.reduce((a, e) => a + e.debit, 0) + salaryDebits.reduce((a, e) => a + e.debit, 0);
+  const todayCredit = credits.filter((e) => e.date === todayStr()).reduce((a, e) => a + e.credit, 0);
+  async function addExpense() {
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!ef.title.trim()) throw new Error("Enter the expense title.");
+      if (!Number(ef.amount)) throw new Error("Enter the amount.");
+      await q(supabase.from("expenses").insert({
+        tenant_id: tid, title: ef.title.trim(), category: ef.category,
+        amount: Number(ef.amount), expense_date: ef.expense_date || todayStr(),
+        payment_method: ef.payment_method, notes: ef.notes || null,
+      }));
+      setMsg({ err: "", ok: `Expense recorded: ${ef.title.trim()} — ${rs(Number(ef.amount))} (Debit).` });
+      setEf({ title: "", category: "Supplies", amount: "", expense_date: todayStr(), payment_method: "cash", notes: "" });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
   return (
     <div>
       <h2>Finance</h2>
-      <div className="grid cols-3" style={{ marginBottom: 14 }}>
-        <div className="card"><div className="muted">Total collected (paid invoices)</div><div className="big">{rs(sum)}</div></div>
-        {Object.entries(byType).map(([k, v]) => <div className="card" key={k}><div className="muted">{k.toUpperCase()}</div><div className="big">{rs(v)}</div></div>)}
+      <p className="muted" style={{ marginTop: -6 }}>Accounts — money in (Credit), money out (Debit), and the running balance.</p>
+      <Notice err={msg.err} ok={msg.ok} />
+      <StatCards items={[
+        { icon: "💰", label: "Total credit (received)", value: rs(totCredit) },
+        { icon: "💸", label: "Total debit (expenses)", value: rs(totDebit), tone: "amber" },
+        { icon: "⚖️", label: "Net balance", value: rs(totCredit - totDebit), tone: "blue" },
+        { icon: "📅", label: "Collected today", value: rs(todayCredit), tone: "violet" },
+      ]} />
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Salary approvals{pendingSlips.length > 0 ? ` — ${pendingSlips.length} waiting` : ""}</h3>
+        {pendingSlips.length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No salary slips are waiting. When HR prepares a slip, it appears here for payment.</p> : (
+          <table>
+            <thead><tr><th>Staff</th><th>Month</th><th>Basic</th><th>Allowances</th><th>Deductions</th><th>Net pay</th><th></th></tr></thead>
+            <tbody>
+              {pendingSlips.map((r) => (
+                <tr key={r.id}>
+                  <td><b>{staffById.get(r.staff_id)?.full_name ?? "—"}</b></td>
+                  <td>{monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`)}</td>
+                  <td>{rs(r.basic_salary ?? 0)}</td><td>{rs(r.allowances ?? 0)}</td><td>{rs(r.deductions ?? 0)}</td>
+                  <td><b>{rs(r.net_salary ?? 0)}</b></td>
+                  <td><button className="btn small" onClick={() => approveSlip(r)}>Approve &amp; pay</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
       <div className="card" style={{ marginBottom: 14 }}>
-        <h3>Invoices</h3>
+        <h3 style={{ marginTop: 0 }}>Cash Book — Debit / Credit</h3>
+        {ledger.length === 0 ? <p className="muted">No entries yet.</p> : (
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr><th>Date</th><th>Description</th><th>Via / Category</th><th>Debit (Rs)</th><th>Credit (Rs)</th><th>Balance</th></tr></thead>
+              <tbody>
+                {ledger.map((e) => (
+                  <tr key={e.key}>
+                    <td>{e.date}</td>
+                    <td><b>{e.desc}</b>{e.sub && <div className="muted" style={{ fontSize: 12 }}>{e.sub}</div>}</td>
+                    <td>{e.via}</td>
+                    <td>{e.debit ? <span style={{ color: "#b91c1c" }}>{rs(e.debit)}</span> : "—"}</td>
+                    <td>{e.credit ? <span style={{ color: "#15803d" }}>{rs(e.credit)}</span> : "—"}</td>
+                    <td><b>{rs(e.balance)}</b></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="muted" style={{ marginBottom: 0 }}>Showing the latest {ledger.length} entries. Credit = payments received; Debit = expenses recorded below.</p>
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Add expense (Debit)</h3>
+        <div className="grid cols-4">
+          <div><label>Title *</label><input value={ef.title} onChange={setE("title")} placeholder="e.g. Electricity bill" /></div>
+          <div><label>Category</label><select value={ef.category} onChange={setE("category")}><option>Supplies</option><option>Rent</option><option>Utilities</option><option>Salaries</option><option>Maintenance</option><option>Equipment</option><option>Other</option></select></div>
+          <div><label>Amount (Rs) *</label><input type="number" value={ef.amount} onChange={setE("amount")} /></div>
+          <div><label>Date</label><input type="date" value={ef.expense_date} onChange={setE("expense_date")} /></div>
+          <div><label>Paid via</label><select value={ef.payment_method} onChange={setE("payment_method")}><option value="cash">Cash</option><option value="bank">Bank transfer</option><option value="card">Card</option></select></div>
+          <div><label>Notes</label><input value={ef.notes} onChange={setE("notes")} /></div>
+        </div>
+        <div className="row" style={{ marginTop: 10 }}><button className="btn" onClick={addExpense}>Record expense</button></div>
+      </div>
+      <div className="card">
+        <h3 style={{ marginTop: 0 }}>Invoices</h3>
         <table>
           <thead><tr><th>Number</th><th>Type</th><th>Total</th><th>Paid</th><th>Status</th><th>Date</th><th>Print</th></tr></thead>
           <tbody>
@@ -1166,14 +1391,6 @@ export function Finance() {
           </tbody>
         </table>
       </div>
-      <div className="card" style={{ marginBottom: 14 }}>
-        <h3>Payments (Cash Book)</h3>
-        <GenericTable rows={(data?.pay ?? []).map((p) => ({
-          date: String(p.paid_at ?? p.created_at ?? "").slice(0, 10),
-          amount: p.amount, method: p.payment_method, reference: p.reference_no ?? "",
-        }))} />
-      </div>
-      <div className="card"><h3>Expenses</h3><GenericTable rows={data?.exp ?? []} /></div>
     </div>
   );
 }
@@ -1182,14 +1399,19 @@ export function Finance() {
 export function HR({ profile, session }) {
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const { data, reload } = useLoad(async () => {
-    const [staff, priv, att] = await Promise.all([
+    const [staff, priv, att, profiles, branding] = await Promise.all([
       q(supabase.from("staff_directory").select("*").order("full_name")),
       q(supabase.from("staff_private").select("*")),
       q(supabase.from("attendance").select("*").order("attendance_date", { ascending: false }).limit(50)),
+      supabase.from("user_profiles").select("id,avatar_url").then((r) => r.data ?? []),
+      profile?.tenant_id
+        ? supabase.from("settings").select("value").eq("tenant_id", profile.tenant_id).eq("key", "clinic_branding").maybeSingle().then((r) => r.data?.value ?? null)
+        : Promise.resolve(null),
     ]);
-    return { staff: staff ?? [], priv: priv ?? [], att: att ?? [] };
+    return { staff: staff ?? [], priv: priv ?? [], att: att ?? [], profiles: profiles ?? [], branding };
   }, []);
   const privMap = Object.fromEntries((data?.priv ?? []).map((p) => [p.staff_id, p]));
+  const avatarByProfile = new Map((data?.profiles ?? []).map((p) => [p.id, p.avatar_url]));
   async function markStaff(staffRow, status, method = "manual") {
     setMsg({ err: "", ok: "" });
     try {
@@ -1215,7 +1437,7 @@ export function HR({ profile, session }) {
   }
   /* Hire: one call creates the login account, the profile, the staff
      record and the salary/CNIC row together (create-clinic-user). */
-  const [hf, setHf] = useState({ full_name: "", role: "doctor", email: "", password: "", phone: "", cnic: "", basic_salary: "", doctor_share_percent: "" });
+  const [hf, setHf] = useState({ full_name: "", role: "doctor", designation: "", email: "", password: "", phone: "", cnic: "", basic_salary: "", doctor_share_percent: "" });
   const setH = (k) => (e) => setHf({ ...hf, [k]: e.target.value });
   async function hire() {
     setMsg({ err: "", ok: "" });
@@ -1227,6 +1449,7 @@ export function HR({ profile, session }) {
         body: JSON.stringify({
           email: hf.email.trim(), password: hf.password, full_name: hf.full_name.trim(), role: hf.role, phone: hf.phone || null,
           staff: {
+            designation: hf.designation || null,
             cnic: hf.cnic || null,
             basic_salary: hf.basic_salary ? Number(hf.basic_salary) : null,
             doctor_share_percent: hf.doctor_share_percent ? Number(hf.doctor_share_percent) : null,
@@ -1236,7 +1459,7 @@ export function HR({ profile, session }) {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error ?? `Function error ${res.status}`);
       setMsg({ err: "", ok: `Hired: ${hf.full_name.trim()} (${hf.role}) — login, staff record and salary saved.` });
-      setHf({ full_name: "", role: "doctor", email: "", password: "", phone: "", cnic: "", basic_salary: "", doctor_share_percent: "" });
+      setHf({ full_name: "", role: "doctor", designation: "", email: "", password: "", phone: "", cnic: "", basic_salary: "", doctor_share_percent: "" });
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
   }
@@ -1269,9 +1492,10 @@ export function HR({ profile, session }) {
       const allow = Number(slipF.allowances) || 0;
       const ded = Number(slipF.deductions) || 0;
       const [yy, mm] = slipF.month.split("-").map(Number);
-      const row = { tenant_id: profile.tenant_id, staff_id: slipFor.id, period_year: yy, period_month: mm, basic_salary: basic, allowances: allow, deductions: ded, late_deduction: 0, absent_deduction: 0, net_salary: basic + allow - ded, status: slipF.status, paid_at: slipF.status === "paid" ? (slipF.paid_at || null) : null };
+      const row = { tenant_id: profile.tenant_id, staff_id: slipFor.id, period_year: yy, period_month: mm, basic_salary: basic, allowances: allow, deductions: ded, late_deduction: 0, absent_deduction: 0, net_salary: basic + allow - ded, status: "draft", paid_at: null };
       const saved = await q(supabase.from("payroll").insert(row).select().single());
-      setMsg({ ok: `Salary slip saved for ${slipFor.full_name} — ${monthLabel(slipF.month)}.`, err: "" });
+      setMsg({ ok: `Salary slip saved for ${slipFor.full_name} — ${monthLabel(slipF.month)} — sent to Finance for payment.`, err: "" });
+      notify(profile.tenant_id, { role: "accountant", type: "salary_pending", title: `Salary pending approval — ${slipFor.full_name}`, message: `${monthLabel(slipF.month)} · Net ${rs(row.net_salary)} is waiting in Finance for payment.`, refType: "payroll", refId: saved?.id ?? null });
       setSlipRows((r) => [saved, ...r]);
       printReceipt?.(paySlipDoc(slipFor.full_name, slipFor.role, saved));
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
@@ -1320,8 +1544,9 @@ export function HR({ profile, session }) {
   const rafRef = useRef(null);
   const [scanning, setScanning] = useState(false);
   const [scanNote, setScanNote] = useState("");
-  const scanSupported = typeof window !== "undefined" && "BarcodeDetector" in window
-    && typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+  const [badgeFor, setBadgeFor] = useState(null);
+  const badgeUrl = useQrUrl(badgeFor?.id ?? "");
+  const cameraOk = typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
   function stopScan() {
     if (rafRef.current) cancelAnimationFrame(rafRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -1331,15 +1556,17 @@ export function HR({ profile, session }) {
   useEffect(() => stopScan, []);
   async function startScan() {
     setScanNote(""); setMsg({ err: "", ok: "" });
-    if (!scanSupported) {
-      setScanNote("QR scanning is not supported on this browser/device (BarcodeDetector + camera required) — use the manual attendance buttons below.");
+    if (!cameraOk) {
+      setScanNote("This browser cannot open a camera here — open the site over HTTPS (or on the phone) and try again, or use the manual attendance buttons below.");
       return;
     }
     let stream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } } });
     } catch (e) {
-      setScanNote(`Camera could not be opened (${e.message}) — use manual attendance.`);
+      setScanNote(e.name === "NotAllowedError"
+        ? "Camera permission was blocked — allow camera access for this site in the browser settings, then try again."
+        : `Camera could not be opened (${e.message}) — use manual attendance.`);
       return;
     }
     streamRef.current = stream;
@@ -1349,20 +1576,31 @@ export function HR({ profile, session }) {
       if (!video) { stopScan(); return; }
       video.srcObject = stream;
       await video.play().catch(() => {});
-      let detector;
-      try { detector = new window.BarcodeDetector({ formats: ["qr_code"] }); }
-      catch { stopScan(); setScanNote("QR detector could not start — use manual attendance."); return; }
+      /* Native detector where the browser has one; otherwise decode
+         frames with jsQR — so Chrome, Edge, Firefox and Safari all work. */
+      let detector = null;
+      try { if ("BarcodeDetector" in window) detector = new window.BarcodeDetector({ formats: ["qr_code"] }); } catch { detector = null; }
+      const canvas = document.createElement("canvas");
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      const onRaw = (raw) => {
+        const staffRow = (data?.staff ?? []).find((x) => x.id === raw);
+        stopScan();
+        if (staffRow) markStaff(staffRow, "present", "qr");
+        else setMsg({ err: `QR scanned, but this staff ID was not found in this clinic: ${raw}`, ok: "" });
+      };
       const tick = async () => {
         if (!streamRef.current) return;
         try {
-          const codes = await detector.detect(video);
-          if (codes && codes.length) {
-            const raw = String(codes[0].rawValue ?? "").trim();
-            const staffRow = (data?.staff ?? []).find((s) => s.id === raw);
-            stopScan();
-            if (staffRow) markStaff(staffRow, "present", "qr");
-            else setMsg({ err: `QR scanned, but this staff ID was not found in this clinic: ${raw}`, ok: "" });
-            return;
+          if (detector) {
+            const codes = await detector.detect(video);
+            if (codes && codes.length) { onRaw(String(codes[0].rawValue ?? "").trim()); return; }
+          } else if (video.readyState >= 2 && video.videoWidth) {
+            const w = Math.min(640, video.videoWidth);
+            const h = Math.max(1, Math.round(video.videoHeight * (w / video.videoWidth)));
+            canvas.width = w; canvas.height = h;
+            ctx.drawImage(video, 0, 0, w, h);
+            const found = jsQR(ctx.getImageData(0, 0, w, h).data, w, h);
+            if (found && found.data) { onRaw(String(found.data).trim()); return; }
           }
         } catch { /* frame not ready — keep scanning */ }
         rafRef.current = requestAnimationFrame(tick);
@@ -1379,7 +1617,8 @@ export function HR({ profile, session }) {
           <h3 style={{ marginTop: 0 }}>Hire staff — login, record and salary in one step</h3>
           <div className="grid cols-4">
             <div><label>Full name *</label><input value={hf.full_name} onChange={setH("full_name")} /></div>
-            <div><label>Role *</label><select value={hf.role} onChange={setH("role")}>{["doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator", "display"].map((r) => <option key={r} value={r}>{r}</option>)}</select></div>
+            <div><label>Role *</label><select value={hf.role} onChange={setH("role")}>{["doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator", "display"].map((r) => <option key={r} value={r}>{r}</option>)}<option value="employee">employee (profile only — no system panels)</option></select></div>
+            <div><label>Designation / job title</label><input value={hf.designation} onChange={setH("designation")} placeholder="e.g. Sweeper, Ward boy, Guard, Manager" /></div>
             <div><label>Email (login) *</label><input value={hf.email} onChange={setH("email")} /></div>
             <div><label>Password (min 8) *</label><input value={hf.password} onChange={setH("password")} /></div>
             <div><label>Phone</label><input value={hf.phone} onChange={setH("phone")} /></div>
@@ -1405,8 +1644,22 @@ export function HR({ profile, session }) {
         {scanning && <video ref={videoRef} muted playsInline style={{ width: "100%", maxWidth: 380, borderRadius: 10, marginTop: 10, background: "#000" }} />}
         {scanning && <p className="muted" style={{ marginBottom: 0 }}>Hold the staff QR code in front of the camera — attendance is marked automatically on scan.</p>}
         {scanNote && <p className="muted" style={{ marginBottom: 0 }}>{scanNote}</p>}
-        {!scanSupported && !scanNote && <p className="muted" style={{ marginBottom: 0 }}>Note: QR scanning works only in browsers with BarcodeDetector and camera access (e.g. Android Chrome). Otherwise, use the manual buttons.</p>}
+        {!scanNote && <p className="muted" style={{ marginBottom: 0 }}>Works in any modern browser with a camera. Staff QR codes: the QR button in the directory below, or each staff member's own My Profile page — print the badge or scan it straight off their phone screen.</p>}
       </div>
+      {badgeFor && (
+        <div className="modal-back" onClick={() => setBadgeFor(null)}>
+          <div className="modal-card" style={{ width: 360, textAlign: "center" }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Attendance QR</h3>
+            <p className="muted" style={{ marginTop: 0 }}>{badgeFor.full_name} · {String(badgeFor.role ?? "").replaceAll("_", " ")}</p>
+            {avatarByProfile.get(badgeFor.user_profile_id) ? <img src={avatarByProfile.get(badgeFor.user_profile_id)} alt="" style={{ width: 72, height: 72, borderRadius: "50%", objectFit: "cover" }} /> : null}
+            {badgeUrl ? <img src={badgeUrl} alt="Attendance QR" style={{ width: 240, height: 240 }} /> : <p className="muted">Preparing QR…</p>}
+            <div className="row" style={{ justifyContent: "center", marginTop: 12 }}>
+              <button className="btn" onClick={() => badgeUrl && printQrBadge(badgeFor.full_name, badgeFor.designation || badgeFor.role, badgeUrl, { clinic: data?.branding?.name, photo: avatarByProfile.get(badgeFor.user_profile_id) })}>Print ID card</button>
+              <button className="btn ghost" onClick={() => setBadgeFor(null)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="card" style={{ marginBottom: 14 }}>
         <div className="row"><h3 style={{ margin: 0 }}>Staff directory</h3><div className="spacer" /><button className="btn small" onClick={markMine}>Mark my attendance</button></div>
         <table>
@@ -1423,6 +1676,7 @@ export function HR({ profile, session }) {
                     <button className="btn small ghost" disabled={!st.is_active} onClick={() => markStaff(st, "absent")}>Absent</button>
                   </div></td>
                   <td><div className="row">
+                    <button className="btn small ghost" onClick={() => setBadgeFor(st)}>QR</button>
                     {(profile.role === "clinic_admin" || profile.role === "hr_manager") && <button className="btn small ghost" onClick={() => openSalary(st)}>Salary</button>}
                     {(profile.role === "clinic_admin" || profile.role === "hr_manager") && <button className="btn small ghost" onClick={() => openSlip(st)}>Slip</button>}
                     <button className="btn small danger" onClick={() => toggleStaffActive(st)}>{st.is_active ? "Deactivate" : "Reactivate"}</button>
@@ -1457,12 +1711,11 @@ export function HR({ profile, session }) {
               <div><label>Basic salary (Rs)</label><input type="number" value={slipF.basic} onChange={(e) => setSlipF({ ...slipF, basic: e.target.value })} /></div>
               <div><label>Allowances (Rs)</label><input type="number" value={slipF.allowances} onChange={(e) => setSlipF({ ...slipF, allowances: e.target.value })} /></div>
               <div><label>Deductions (Rs)</label><input type="number" value={slipF.deductions} onChange={(e) => setSlipF({ ...slipF, deductions: e.target.value })} /></div>
-              <div><label>Status</label><select value={slipF.status} onChange={(e) => setSlipF({ ...slipF, status: e.target.value })}><option value="paid">Paid</option><option value="pending">Pending</option></select></div>
-              {slipF.status === "paid" && <div><label>Paid date</label><input type="date" value={slipF.paid_at} onChange={(e) => setSlipF({ ...slipF, paid_at: e.target.value })} /></div>}
+              <div style={{ gridColumn: "1 / -1" }}><p className="muted" style={{ margin: 0 }}>HR only prepares the slip — it is saved as <b>Pending approval</b> and sent to Finance. Finance marks the salary paid; HR and the employee are then notified automatically.</p></div>}
             </div>
             <p style={{ margin: "10px 0 0" }}>Net pay: <b>{rs((Number(slipF.basic) || 0) + (Number(slipF.allowances) || 0) - (Number(slipF.deductions) || 0))}</b></p>
             <div className="row" style={{ marginTop: 12 }}>
-              <button className="btn" onClick={saveSlip}>Save & Print slip</button>
+              <button className="btn" onClick={saveSlip}>Save slip — send to Finance</button>
               <button className="btn ghost" onClick={() => setSlipFor(null)}>Close</button>
             </div>
             {slipRows.length > 0 && (
@@ -1472,7 +1725,7 @@ export function HR({ profile, session }) {
                   <thead><tr><th>Month</th><th>Net</th><th>Status</th><th></th></tr></thead>
                   <tbody>
                     {slipRows.map((r) => (
-                      <tr key={r.id}><td>{monthLabel(`${r.period_year}-${String(r.period_month).padStart(2, "0")}`)}</td><td>{rs(r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0)))}</td><td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{r.status}</span></td><td><button className="btn small ghost" onClick={() => printReceipt?.(paySlipDoc(slipFor.full_name, slipFor.role, r))}>Print</button></td></tr>
+                      <tr key={r.id}><td>{monthLabel(`${r.period_year}-${String(r.period_month).padStart(2, "0")}`)}</td><td>{rs(r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0)))}</td><td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{payrollStatusLabel(r.status)}</span></td><td><button className="btn small ghost" onClick={() => printReceipt?.(paySlipDoc(slipFor.full_name, slipFor.role, r))}>Print</button></td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -1489,16 +1742,49 @@ export function HR({ profile, session }) {
 /* ---------------- Lab ---------------- */
 export function Lab({ profile }) {
   const { printReceipt } = usePrint() ?? {};
-  const { data, err } = useLoad(async () => {
-    const [orders, lp] = await Promise.all([
+  const [msg, setMsg] = useState({ err: "", ok: "" });
+  const [resultFor, setResultFor] = useState(null);
+  const [rf, setRf] = useState({ value: "", abnormal: false });
+  const [busy, setBusy] = useState(false);
+  const canAct = ["lab_operator", "clinic_admin"].includes(profile?.role);
+  const { data, err, reload } = useLoad(async () => {
+    const [orders, lp, patients, results] = await Promise.all([
       q(supabase.from("lab_orders").select("*").order("created_at", { ascending: false }).limit(100)),
       profile?.tenant_id
         ? q(supabase.from("settings").select("value").eq("tenant_id", profile.tenant_id).eq("key", "lab_prices").maybeSingle())
         : Promise.resolve(null),
+      q(supabase.from("patients").select("id,full_name,mr_number")),
+      q(supabase.from("lab_results").select("*").order("created_at", { ascending: false }).limit(300)),
     ]);
-    return { orders: orders ?? [], labPrices: lp?.value ?? null };
+    return { orders: orders ?? [], labPrices: lp?.value ?? null, patients: patients ?? [], results: results ?? [] };
   }, []);
   const rows = data?.orders ?? [];
+  const patById = new Map((data?.patients ?? []).map((x) => [x.id, x]));
+  const resultByOrder = new Map();
+  (data?.results ?? []).forEach((r) => { if (!resultByOrder.has(r.lab_order_id)) resultByOrder.set(r.lab_order_id, r); });
+  /* The lab workflow: a doctor's order arrives as pending; the lab
+     enters the result here, which completes the order and makes the
+     report printable. Verified live: lab_operator can insert
+     lab_results and update lab_orders. */
+  async function saveResult() {
+    if (!resultFor) return;
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!rf.value.trim()) throw new Error("Enter the result value.");
+      setBusy(true);
+      await q(supabase.from("lab_results").insert({
+        tenant_id: profile.tenant_id, lab_order_id: resultFor.id, patient_id: resultFor.patient_id,
+        result_value: rf.value.trim(), is_abnormal: rf.abnormal,
+        reported_by: profile.id, reported_at: new Date().toISOString(),
+      }));
+      await q(supabase.from("lab_orders").update({ status: "completed" }).eq("id", resultFor.id));
+      setMsg({ err: "", ok: `Result saved for ${resultFor.test_name} — the report is ready to print.` });
+      setResultFor(null);
+      setRf({ value: "", abnormal: false });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+    setBusy(false);
+  }
   const savedPrices = data?.labPrices ?? null;
   /* Effective price list: clinic's saved prices first, built-in list as
      fallback, standard fee (labelled) for anything unlisted. */
@@ -1506,12 +1792,10 @@ export function Lab({ profile }) {
     ...(savedPrices ? Object.keys(savedPrices) : []),
     ...BUILTIN_LAB_PRICES.map((t) => t.name),
   ])].sort((a, b) => a.localeCompare(b));
-  const cols = rows.length ? Object.keys(rows[0]).filter((c) => !["tenant_id", "updated_at"].includes(c)) : [];
-  const fmt = (v) => (typeof v === "object" ? JSON.stringify(v) : String(v ?? ""));
   return (
     <div>
       <h2>Lab Orders</h2>
-      <Notice err={err} />
+      <Notice err={msg.err || err} ok={msg.ok} />
       <StatCards items={[
         { icon: "🧪", label: "Orders today", value: rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).length },
         { icon: "⏳", label: "Pending", value: rows.filter((r) => r.status === "pending").length, tone: "amber" },
@@ -1519,25 +1803,63 @@ export function Lab({ profile }) {
         { icon: "💰", label: "Lab fees today", value: rs(rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).reduce((a, r) => a + (Number(r.fee_pkr) || 0), 0)), tone: "violet" },
       ]} />
       <div className="card">
-        {rows.length === 0 ? <p className="muted">No records yet.</p> : (
+        {rows.length === 0 ? <p className="muted">No lab orders yet. Doctors order tests from the consultation panel.</p> : (
           <div style={{ overflowX: "auto" }}>
             <table>
-              <thead><tr>{cols.map((c) => <th key={c}>{c.replaceAll("_", " ")}</th>)}<th>Print</th></tr></thead>
+              <thead><tr><th>Date</th><th>Patient</th><th>Test</th><th>Fee</th><th>Status</th><th>Result</th><th>Actions</th></tr></thead>
               <tbody>
-                {rows.map((r, i) => (
-                  <tr key={r.id ?? i}>
-                    {cols.map((c) => <td key={c}>{fmt(r[c])}</td>)}
-                    <td><button className="btn small ghost" onClick={() => printReceipt?.({
-                      title: "Lab Order",
-                      lines: cols.map((c) => ({ k: c.replaceAll("_", " "), v: fmt(r[c]) })),
-                    })}>Print</button></td>
-                  </tr>
-                ))}
+                {rows.map((r) => { const pt = patById.get(r.patient_id); const res = resultByOrder.get(r.id); return (
+                  <tr key={r.id}>
+                    <td>{String(r.created_at ?? "").slice(0, 10)}</td>
+                    <td><b>{pt?.full_name ?? "—"}</b> <span className="muted">{pt?.mr_number ?? ""}</span></td>
+                    <td>{r.test_name}</td>
+                    <td>{rs(r.fee_pkr ?? 0)}</td>
+                    <td><span className={`pill ${r.status === "completed" ? "green" : "amber"}`}>{r.status}</span></td>
+                    <td>{res ? <>{res.result_value} {res.is_abnormal && <span className="pill red">abnormal</span>}</> : <span className="muted">—</span>}</td>
+                    <td><div className="row">
+                      {r.status !== "completed" && canAct && <button className="btn small" onClick={() => { setResultFor(r); setRf({ value: "", abnormal: false }); }}>Enter result</button>}
+                      {r.status === "completed" && res && <button className="btn small ghost" onClick={() => printReceipt?.({
+                        paper: "A4", title: "Lab Report",
+                        lines: [
+                          { k: "Patient", v: pt?.full_name ?? "—" },
+                          { k: "MR #", v: pt?.mr_number ?? "—" },
+                          { k: "Test", v: r.test_name },
+                          { k: "Result", v: res.result_value },
+                          ...(res.is_abnormal ? [{ k: "Flag", v: "ABNORMAL" }] : []),
+                          { k: "Fee", v: rs(r.fee_pkr ?? 0) },
+                          { k: "Reported", v: String(res.reported_at ?? res.created_at ?? "").slice(0, 10) },
+                        ],
+                      })}>Print report</button>}
+                      {r.status !== "completed" && <button className="btn small ghost" onClick={() => printReceipt?.({
+                        title: "Lab Order",
+                        lines: [
+                          { k: "Patient", v: pt?.full_name ?? "—" },
+                          { k: "Test", v: r.test_name },
+                          { k: "Fee", v: rs(r.fee_pkr ?? 0) },
+                          { k: "Date", v: String(r.created_at ?? "").slice(0, 10) },
+                        ],
+                      })}>Print order</button>}
+                    </div></td>
+                  </tr> ); })}
               </tbody>
             </table>
           </div>
         )}
       </div>
+      {resultFor && (
+        <div className="modal-back" onClick={() => setResultFor(null)}>
+          <div className="modal-card" style={{ width: 480 }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ marginTop: 0 }}>Enter result — {resultFor.test_name}</h3>
+            <p className="muted" style={{ marginTop: 0 }}>{patById.get(resultFor.patient_id)?.full_name ?? ""}</p>
+            <div><label>Result value *</label><textarea rows={3} value={rf.value} onChange={(e) => setRf({ ...rf, value: e.target.value })} placeholder="e.g. Hemoglobin 13.5 g/dL" /></div>
+            <label className="row" style={{ gap: 8, marginTop: 10, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={rf.abnormal} onChange={(e) => setRf({ ...rf, abnormal: e.target.checked })} style={{ width: 18, height: 18 }} /> Mark as abnormal</label>
+            <div className="row" style={{ marginTop: 14 }}>
+              <button className="btn" disabled={busy} onClick={saveResult}>{busy ? "Saving…" : "Save result & complete"}</button>
+              <button className="btn ghost" onClick={() => setResultFor(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="card" style={{ marginTop: 14 }}>
         <h3>Lab test prices — effective</h3>
         <p className="muted" style={{ marginTop: 0 }}>
@@ -1811,7 +2133,7 @@ export function Settings({ profile, session }) {
            FK), and the function creates it when `staff` is sent. */
         body: JSON.stringify({
           ...f,
-          staff: ["doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator"].includes(f.role) ? {} : null,
+          staff: ["doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator", "employee"].includes(f.role) ? {} : null,
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -2718,7 +3040,7 @@ export function Settings({ profile, session }) {
             <div><label>Email</label><input value={f.email} onChange={set("email")} /></div>
             <div><label>Password (min 8)</label><input type="password" value={f.password} onChange={set("password")} /></div>
             <div><label>Role</label><select value={f.role} onChange={set("role")}>
-              {["doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator", "display", ...(profile.role === "super_admin" ? ["clinic_admin"] : [])].map((r) => <option key={r} value={r}>{r}</option>)}
+              {["doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator", "display", "employee", ...(profile.role === "super_admin" ? ["clinic_admin"] : [])].map((r) => <option key={r} value={r}>{r}</option>)}
             </select></div>
             <div><label>Phone</label><input value={f.phone} onChange={set("phone")} /></div>
           </div>
@@ -3726,7 +4048,7 @@ function catalogSearch(prods, meds, term, ingMatch) {
 }
 
 /* ---------------- Phase 4: add a catalog variant into clinic stock -------- */
-export function PharmacyCatalogAdd({ profile, tenantMeds, onAdded }) {
+export function PharmacyCatalogAdd({ profile, tenantMeds, tenantBatches, onAdded }) {
   const tid = profile.tenant_id;
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [term, setTerm] = useState("");
@@ -3747,7 +4069,12 @@ export function PharmacyCatalogAdd({ profile, tenantMeds, onAdded }) {
     return p ? `${p.name} › ${c.name}` : c.name;
   };
   const medById = new Map(meds.map((m) => [m.id, m]));
-  const inStock = new Set((tenantMeds ?? []).map((m) => m.catalog_product_id).filter(Boolean));
+  /* "In stock" must mean real, sellable quantity: a medicine row with
+     no batch (or only empty batches) is NOT in stock. */
+  const medByProduct = new Map((tenantMeds ?? []).filter((m) => m.catalog_product_id).map((m) => [m.catalog_product_id, m]));
+  const qtyByMed = new Map();
+  (tenantBatches ?? []).forEach((b) => qtyByMed.set(b.medicine_id, (qtyByMed.get(b.medicine_id) ?? 0) + (Number(b.quantity) || 0)));
+  const stockQty = (p) => { const m = medByProduct.get(p.id); return m ? (qtyByMed.get(m.id) ?? 0) : null; };
   const results = catalogSearch(prods, meds, term, ingMatch).slice(0, 30);
   const selProd = prods.find((p) => p.id === addId) ?? null;
   const selMed = selProd ? medById.get(selProd.medicine_id) : null;
@@ -3776,23 +4103,26 @@ export function PharmacyCatalogAdd({ profile, tenantMeds, onAdded }) {
         manufacturer: selProd.manufacturer || null, category: catPath(selMed.category_id),
         strength: selProd.strength_text, dosage_form: selProd.dosage_form,
         barcode: selProd.barcode || null,
-        purchase_price: f.purchase_price === "" ? null : Number(f.purchase_price),
-        sale_price: f.sale_price === "" ? null : Number(f.sale_price),
+        purchase_price: Number(f.purchase_price) || 0,
+        sale_price: Number(f.sale_price) || 0,
         reorder_level: Number(f.reorder_level || 10),
         catalog_product_id: selProd.id,
       }).select().single());
+      if (f.batch_no.trim() && Number(f.batch_qty) > 0 && !f.expiry_date) throw new Error("A first batch needs its expiry date — add it here, or leave the batch fields empty and add the batch from the Stock list.");
       let batchNote = "";
       if (f.batch_no.trim() && Number(f.batch_qty) > 0) {
         await q(supabase.from("medicine_batches").insert({
           tenant_id: tid, medicine_id: med.id, batch_no: f.batch_no.trim(),
           quantity: Number(f.batch_qty), expiry_date: f.expiry_date || null,
-          purchase_price: f.purchase_price === "" ? null : Number(f.purchase_price),
-          sale_price: f.sale_price === "" ? null : Number(f.sale_price),
+          purchase_price: Number(f.purchase_price) || 0,
+          sale_price: Number(f.sale_price) || 0,
           received_date: todayStr(),
         }));
         batchNote = ` First batch (${f.batch_no.trim()} · qty ${f.batch_qty}) was also added.`;
+      } else {
+        batchNote = " It has no stock yet — add a batch from the Stock list below to sell it.";
       }
-      setMsg({ err: "", ok: `${med.name}" has been added to clinic stock.${batchNote}` });
+      setMsg({ err: "", ok: `${med.name} has been added to clinic stock.${batchNote}` });
       setAddId(null);
       onAdded?.();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
@@ -3802,11 +4132,7 @@ export function PharmacyCatalogAdd({ profile, tenantMeds, onAdded }) {
   return (
     <div className="card" style={{ marginBottom: 14 }}>
       <h3>💊 Add medicine from catalog</h3>
-      <p className="muted" style={{ marginTop: 0 }}>
-        Search the global Medicine Catalog by generic, brand, barcode or ingredient — the medicine is added
-        to this clinic's stock in one click (name and price prefilled from the catalog, editable).
-        You can include the first batch now, or add batches later.
-      </p>
+      <p className="muted" style={{ marginTop: 0 }}>Search the global Medicine Catalog and add medicines to this clinic's stock.</p>
       <Notice err={msg.err} ok={msg.ok} />
       <input style={{ width: "100%" }} placeholder="Search catalog: Panadol, amoxi, barcode…" value={term} onChange={(e) => setTerm(e.target.value)} />
       {term.trim() && (
@@ -3820,9 +4146,7 @@ export function PharmacyCatalogAdd({ profile, tenantMeds, onAdded }) {
                   <div className="muted" style={{ fontSize: 12 }}>{p.manufacturer ?? ""}</div></td>
                 <td>{p.strength_text}</td><td>{p.dosage_form}</td><td>{p.pack_size ?? "—"}</td>
                 <td>{p.retail_price_pkr != null ? rs(p.retail_price_pkr) : "—"}</td>
-                <td>{inStock.has(p.id)
-                  ? <span className="pill" style={{ background: "#dcfce7", color: "#166534" }}>✓ In stock</span>
-                  : <button className="btn small" onClick={() => openAdd(p)}>＋ Add to stock</button>}</td>
+                <td>{(() => { const qty = stockQty(p); if (qty === null) return <button className="btn small" onClick={() => openAdd(p)}>＋ Add to stock</button>; if (qty > 0) return <span className="pill" style={{ background: "#dcfce7", color: "#166534" }}>✓ In stock</span>; return <span className="pill amber">Added — no stock yet</span>; })()}</td>
               </tr> ); })}
             {results.length === 0 && <tr><td colSpan={6} className="muted">Nothing found in the catalog.</td></tr>}
           </tbody>
@@ -3836,7 +4160,7 @@ export function PharmacyCatalogAdd({ profile, tenantMeds, onAdded }) {
             <div><label>Sale price (Rs)</label><input type="number" value={f.sale_price} onChange={set("sale_price")} /></div>
             <div><label>Purchase price (Rs)</label><input type="number" value={f.purchase_price} onChange={set("purchase_price")} /></div>
             <div><label>Reorder level</label><input type="number" value={f.reorder_level} onChange={set("reorder_level")} /></div>
-            <div><label>Batch no (optional)</label><input value={f.batch_no} onChange={set("batch_no")} /></div>
+            <div><label>Batch no</label><input value={f.batch_no} onChange={set("batch_no")} /></div>
             <div><label>Batch qty</label><input type="number" value={f.batch_qty} onChange={set("batch_qty")} /></div>
             <div><label>Expiry date</label><input type="date" value={f.expiry_date} onChange={set("expiry_date")} /></div>
           </div>
@@ -4411,6 +4735,10 @@ export function MyProfile({ profile }) {
   const [sal, setSal] = useState(undefined);
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [photoBusy, setPhotoBusy] = useState(false);
+  const [myStaffId, setMyStaffId] = useState("");
+  const myQr = useQrUrl(myStaffId);
+  const [myAtt, setMyAtt] = useState(undefined);
+  const [clinicName, setClinicName] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -4418,6 +4746,20 @@ export function MyProfile({ profile }) {
         const { data } = await supabase.from("user_profiles").select("*").eq("id", profile.id).maybeSingle();
         if (data) { setMe(data); setForm({ full_name: data.full_name ?? "", phone: data.phone ?? "" }); }
       } catch { /* profile prop still renders */ }
+      try {
+        const sd = await supabase.from("staff_directory").select("id").eq("user_profile_id", profile.id).maybeSingle();
+        if (sd.data?.id) setMyStaffId(sd.data.id);
+      } catch { /* QR card simply stays hidden */ }
+      try {
+        const ra = await supabase.rpc("my_attendance");
+        setMyAtt(ra.error ? null : (ra.data ?? []));
+      } catch { setMyAtt(null); }
+      try {
+        if (profile.tenant_id) {
+          const br = await supabase.from("settings").select("value").eq("tenant_id", profile.tenant_id).eq("key", "clinic_branding").maybeSingle();
+          if (br.data?.value?.name) setClinicName(br.data.value.name);
+        }
+      } catch { /* card falls back to a generic header */ }
       const r = await supabase.rpc("my_salary_details");
       setSal(r.error ? null : (r.data ?? null));
     })();
@@ -4519,6 +4861,41 @@ export function MyProfile({ profile }) {
           )}
         </div>
       </div>
+      {myStaffId && (
+        <div className="card" style={{ marginTop: 14 }}>
+          <h3>My attendance QR</h3>
+          <div className="row" style={{ alignItems: "center", gap: 18 }}>
+            {myQr ? <img src={myQr} alt="My attendance QR" style={{ width: 180, height: 180 }} /> : <p className="muted">Preparing QR…</p>}
+            <div>
+              <p className="muted" style={{ marginTop: 0 }}>Show this code at the HR desk — your attendance is marked by scanning it. It also works straight off your phone screen.</p>
+              <button className="btn" onClick={() => myQr && printQrBadge(me?.full_name ?? profile.full_name ?? "", staff?.designation || profile.role, myQr, { clinic: clinicName, photo: me?.avatar_url })}>Print my ID card</button>
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="card" style={{ marginTop: 14 }}>
+        <h3>My attendance</h3>
+        {myAtt === undefined && <p className="muted">Loading…</p>}
+        {myAtt === null && <p className="muted">Your attendance view will appear here once the clinic completes a one-time setup. Please ask your clinic admin — it takes a minute.</p>}
+        {Array.isArray(myAtt) && (myAtt.length === 0
+          ? <p className="muted">No attendance records yet. Your attendance is marked at the HR desk (QR scan or manual).</p>
+          : (
+            <table>
+              <thead><tr><th>Date</th><th>Status</th><th>Method</th><th>Check-in</th><th>Check-out</th></tr></thead>
+              <tbody>
+                {myAtt.slice(0, 30).map((a) => (
+                  <tr key={a.id}>
+                    <td>{String(a.attendance_date ?? "").slice(0, 10)}</td>
+                    <td><span className={`pill ${a.status === "present" ? "green" : "amber"}`}>{a.status}</span></td>
+                    <td>{a.method ?? ""}</td>
+                    <td>{a.check_in_at ? String(a.check_in_at).slice(11, 16) : "—"}</td>
+                    <td>{a.check_out_at ? String(a.check_out_at).slice(11, 16) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+      </div>
       {staff && (
         <div className="card" style={{ marginTop: 14 }}>
           <h3>My payslips</h3>
@@ -4535,7 +4912,7 @@ export function MyProfile({ profile }) {
                       <td>{rs(r.allowances ?? 0)}</td>
                       <td>{rs(r.deductions ?? 0)}</td>
                       <td><b>{rs(r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0)))}</b></td>
-                      <td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{r.status}</span></td>
+                      <td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{payrollStatusLabel(r.status)}</span></td>
                       <td>{r.paid_at ? String(r.paid_at).slice(0, 10) : "—"}</td>
                       <td><button className="btn small ghost" onClick={() => printReceipt?.(paySlipDoc(staff.full_name, staff.role, r))}>Print</button></td>
                     </tr>

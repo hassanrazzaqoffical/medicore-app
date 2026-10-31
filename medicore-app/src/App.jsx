@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "./supabaseClient.js";
 import {
   Dashboard, Tokens, TvBoard, Patients, CareQueue, Pharmacy,
@@ -21,6 +21,7 @@ const HOME_BY_ROLE = {
   clinic_admin: "dashboard", doctor: "doctor", nurse: "nursing",
   pharmacist: "pharmacy", token_operator: "tokens", accountant: "finance",
   hr_manager: "hr", lab_operator: "lab", display: "tv", super_admin: "platform",
+  employee: "myprofile",
 };
 const NAV = [
   { key: "dashboard", label: "Dashboard", icon: "🏠", roles: ["clinic_admin"] },
@@ -36,7 +37,7 @@ const NAV = [
   { key: "reports", label: "Reports", icon: "📈", roles: ["clinic_admin", "accountant"] },
   { key: "tv", label: "TV Queue Board", icon: "📺", roles: ["clinic_admin", "display"] },
   { key: "settings", label: "Settings / Users", icon: "⚙️", roles: ["clinic_admin"] },
-  { key: "myprofile", label: "My Profile", icon: "👤", roles: ["clinic_admin", "doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator"] },
+  { key: "myprofile", label: "My Profile", icon: "👤", roles: ["clinic_admin", "doctor", "nurse", "pharmacist", "token_operator", "accountant", "hr_manager", "lab_operator", "employee"] },
   { key: "platform", label: "Platform Dashboard", icon: "📊", roles: ["super_admin"] },
   { key: "tenants", label: "Tenants", icon: "🏥", roles: ["super_admin"] },
   { key: "plans", label: "Plans", icon: "💳", roles: ["super_admin"] },
@@ -50,6 +51,49 @@ const NAV = [
 const lockKeyFor = (email) => `medicore_login_lock_${email.trim().toLowerCase()}`;
 function readLock(email) {
   try { return JSON.parse(localStorage.getItem(lockKeyFor(email)) ?? "null"); } catch { return null; }
+}
+
+/* In-app notifications: rows addressed to this user (user_id) or to
+   their role (target_role) — e.g. salary pending for Finance, salary
+   paid for HR and the employee. Read-state is kept on this device
+   (the table has no client update policy), keyed by user. */
+function NotificationsBell({ profile }) {
+  const [items, setItems] = useState([]);
+  const [open, setOpen] = useState(false);
+  const seenKey = `medicore_notif_seen_${profile?.id ?? "x"}`;
+  const [seenAt, setSeenAt] = useState(() => { try { return localStorage.getItem(seenKey) ?? ""; } catch { return ""; } });
+  const load = useCallback(async () => {
+    if (!profile?.id || !profile?.role) return;
+    try {
+      const { data } = await supabase.from("notifications").select("*")
+        .or(`user_id.eq.${profile.id},target_role.eq.${profile.role}`)
+        .order("created_at", { ascending: false }).limit(20);
+      if (data) setItems(data);
+    } catch { /* the bell is best-effort */ }
+  }, [profile?.id, profile?.role]);
+  useEffect(() => { load(); const i = setInterval(load, 45000); return () => clearInterval(i); }, [load]);
+  const unread = items.filter((n) => String(n.created_at ?? "") > seenAt).length;
+  const toggle = () => {
+    if (!open) { const now = new Date().toISOString(); try { localStorage.setItem(seenKey, now); } catch { /* ignore */ } setSeenAt(now); }
+    setOpen(!open);
+  };
+  return (
+    <div style={{ position: "relative", marginTop: 10 }}>
+      <button className="btn small" style={{ width: "100%" }} onClick={toggle}>🔔 Notifications{unread > 0 ? ` · ${unread} new` : ""}</button>
+      {open && (
+        <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 300, maxHeight: 340, overflowY: "auto", background: "#fff", color: "#0f172a", borderRadius: 12, boxShadow: "0 18px 40px rgba(0,0,0,.35)", padding: 12, zIndex: 90, textAlign: "left" }}>
+          <b>Notifications</b>
+          {items.length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No notifications yet.</p> : items.map((n) => (
+            <div key={n.id} style={{ borderTop: "1px solid #e2e8f0", padding: "8px 0" }}>
+              <div style={{ fontWeight: 600, fontSize: 13 }}>{n.title}</div>
+              <div style={{ fontSize: 12.5 }}>{n.message}</div>
+              <div className="muted" style={{ fontSize: 11 }}>{String(n.created_at ?? "").slice(0, 16).replace("T", " ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Login() {
@@ -376,12 +420,12 @@ export default function App() {
     dashboard: <Dashboard profile={profile ?? {}} />,
     tokens: <Tokens profile={profile ?? {}} />,
     patients: <Patients profile={profile ?? {}} />,
-    doctor: <CareQueue profile={profile ?? {}} title="Doctor — Consultation Queue" />,
-    nursing: <CareQueue profile={profile ?? {}} title="Nursing — Patient Queue" />,
+    doctor: <CareQueue profile={profile ?? {}} title="Doctor — Consultation Queue" variant="doctor" />,
+    nursing: <CareQueue profile={profile ?? {}} title="Nursing — Patient Queue" variant="nurse" />,
     pharmacy: <Pharmacy profile={profile ?? {}} />,
     lab: <Lab profile={profile ?? {}} />,
     operations: <Operations profile={profile ?? {}} />,
-    finance: <Finance />,
+    finance: <Finance profile={profile ?? {}} />,
     hr: <HR profile={profile ?? {}} session={session} />,
     reports: <Reports />,
     tv: <Tokens profile={profile ?? {}} tvMode />,
@@ -422,6 +466,7 @@ export default function App() {
           <div style={{ fontWeight: 700, color: "#fff" }}>{profile?.full_name ?? "…"}</div>
           <div style={{ fontSize: 12 }} className="muted">{profile?.email ?? ""}</div>
           <div style={{ fontSize: 12 }}>{profile?.role ?? ""}</div>
+          {profile && profile.role !== "super_admin" && <NotificationsBell profile={profile} />}
           <button className="btn small" style={{ marginTop: 10 }} onClick={() => supabase.auth.signOut()}>Sign out</button>
         </div>
       </aside>
