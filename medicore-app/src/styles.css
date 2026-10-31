@@ -466,3 +466,16 @@ tbody tr:hover { background: #f3faf9; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Dashboard charts (role dashboards) */
+.bars { display: flex; align-items: flex-end; gap: 10px; height: 165px; padding-top: 6px; }
+.bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; min-width: 0; }
+.barval { font-size: 11px; font-weight: 700; color: #0f766e; min-height: 14px; text-align: center; white-space: nowrap; }
+.barfill { width: 70%; max-width: 46px; background: linear-gradient(180deg, #0f766e, #115e59); border-radius: 6px 6px 0 0; }
+.barlbl { font-size: 11px; color: #64748b; }
+.hrow { display: flex; align-items: center; gap: 10px; margin: 9px 0; }
+.hname { width: 130px; font-size: 13px; font-weight: 600; }
+.htrack { flex: 1; height: 12px; background: #e2e8f0; border-radius: 6px; overflow: hidden; }
+.hfill { height: 100%; background: linear-gradient(90deg, #0f766e, #14b8a6); border-radius: 6px; }
+.hval { font-size: 13px; min-width: 96px; }
+@media (prefers-reduced-motion: no-preference) { .barfill, .hfill { transition: height .4s ease, width .4s ease; } }

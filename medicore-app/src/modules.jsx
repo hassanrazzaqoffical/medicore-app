@@ -299,16 +299,31 @@ export function Dashboard({ profile }) {
   const tid = profile.tenant_id;
   const { data } = useLoad(async () => {
     const day = todayStr();
-    const [patientsCount, tokens, invoices, batches, medicines] = await Promise.all([
+    const [patientsCount, tokens, invoices, batches, medicines, depts, payments] = await Promise.all([
       // head:true returns data:null — the count lives on the response, not in data.
-      supabase.from("patients").select("id", { count: "exact", head: true }).then((r) => r.count ?? 0),
-      q(supabase.from("tokens").select("id,status").eq("token_date", day)),
+      // Active patients only, so this matches the Patients screen register.
+      supabase.from("patients").select("id", { count: "exact", head: true }).eq("is_active", true).then((r) => r.count ?? 0),
+      q(supabase.from("tokens").select("id,status,department_id").eq("token_date", day)),
       q(supabase.from("invoices").select("total_amount,status,created_at").eq("status", "paid")),
       q(supabase.from("medicine_batches").select("id,quantity,expiry_date,medicine_id,batch_no")),
       q(supabase.from("medicines").select("id,name,reorder_level")),
+      q(supabase.from("departments").select("id,name").eq("is_active", true).order("name")),
+      q(supabase.from("payments").select("amount,created_at").order("created_at", { ascending: false }).limit(500)),
     ]);
-    const revenueToday = (invoices ?? []).filter((i) => String(i.created_at).slice(0, 10) === day)
-      .reduce((s, i) => s + Number(i.total_amount || 0), 0);
+    /* Whole-clinic summary extras — tolerant reads (see CareQueue). */
+    const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
+    const [salaryPending, attToday, labPendingRows, pharmTodayRows] = await Promise.all([
+      tol(supabase.from("payroll").select("id").eq("status", "draft")),
+      tol(supabase.from("attendance").select("status,late_minutes").eq("attendance_date", day)),
+      tol(supabase.from("lab_orders").select("id").eq("status", "pending")),
+      tol(supabase.from("invoices").select("total_amount").eq("invoice_type", "pharmacy").eq("status", "paid").gte("created_at", day)),
+    ]);
+    /* Revenue = money actually RECEIVED today (payments), the same
+       basis Finance uses for "Income today" — so the two screens can
+       never disagree. (Invoice totals are billing, not collections:
+       a credit sale bills today but is collected later.) */
+    const revenueToday = (payments ?? []).filter((p) => String(p.created_at).slice(0, 10) === day)
+      .reduce((s, p) => s + Number(p.amount || 0), 0);
     const medMap = Object.fromEntries((medicines ?? []).map((m) => [m.id, m]));
     const low = (batches ?? []).filter((b) => Number(b.quantity) <= Number(medMap[b.medicine_id]?.reorder_level ?? 10));
     const in30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
@@ -317,9 +332,19 @@ export function Dashboard({ profile }) {
     return {
       patients: patientsCount,
       tokens: tokens ?? [], revenueToday, low, expired, expiring, medMap,
+      invoices: invoices ?? [], payments: payments ?? [], depts: depts ?? [],
+      salaryPending: salaryPending.length,
+      attPresent: attToday.filter((a) => a.status === "present").length,
+      attTotal: attToday.length,
+      labPending: labPendingRows.length,
+      pharmToday: pharmTodayRows.reduce((s2, i) => s2 + Number(i.total_amount || 0), 0),
     };
   }, [tid]);
   const t = data?.tokens ?? [];
+  const days7 = [...Array(7)].map((_, i) => { const d = new Date(Date.now() - (6 - i) * 864e5); return { key: d.toISOString().slice(0, 10), label: d.toLocaleDateString([], { weekday: "short" }) }; });
+  const last7 = days7.map((d) => ({ ...d, total: (data?.payments ?? []).filter((p) => String(p.created_at).slice(0, 10) === d.key).reduce((s2, p) => s2 + Number(p.amount || 0), 0) }));
+  const maxRev = Math.max(1, ...last7.map((d) => d.total));
+  const maxTok = Math.max(1, ...(data?.depts ?? []).map((d) => t.filter((x) => x.department_id === d.id).length));
   return (
     <div>
       <h2>Welcome, {profile.full_name}</h2>
@@ -330,6 +355,40 @@ export function Dashboard({ profile }) {
         <div className="card"><div className="muted">Waiting now</div><div className="big">{t.filter((x) => x.status === "waiting").length}</div></div>
         <div className="card"><div className="muted">Revenue today</div><div className="big">{data ? rs(data.revenueToday) : "—"}</div></div>
       </div>
+      {data && (
+        <div className="grid cols-4" style={{ marginTop: 14 }}>
+          <div className="card"><div className="muted">Lab reports pending</div><div className="big">{data.labPending}</div></div>
+          <div className="card"><div className="muted">Salary approvals waiting</div><div className="big">{data.salaryPending}</div></div>
+          <div className="card"><div className="muted">Staff present today</div><div className="big">{data.attPresent}<span className="muted" style={{ fontSize: 14 }}> / {data.attTotal} marked</span></div></div>
+          <div className="card"><div className="muted">Pharmacy sales today</div><div className="big">{rs(data.pharmToday)}</div></div>
+        </div>
+      )}
+      {data && (
+        <div className="grid cols-2" style={{ marginTop: 14 }}>
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Collections — last 7 days</h3>
+            <div className="bars">
+              {last7.map((d) => (
+                <div className="bar" key={d.key}>
+                  <div className="barval">{d.total ? rs(d.total) : ""}</div>
+                  <div className="barfill" style={{ height: Math.max(3, Math.round((d.total / maxRev) * 110)) }} />
+                  <div className="barlbl">{d.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="card">
+            <h3 style={{ marginTop: 0 }}>Tokens by department — today</h3>
+            {(data.depts ?? []).map((d) => { const rows = t.filter((x) => x.department_id === d.id); const w = rows.filter((x) => x.status === "waiting").length; return (
+              <div className="hrow" key={d.id}>
+                <div className="hname">{d.name}</div>
+                <div className="htrack"><div className="hfill" style={{ width: (maxTok ? Math.round((rows.length / maxTok) * 100) : 0) + "%" }} /></div>
+                <div className="hval">{rows.length} <span className="muted">({w} waiting)</span></div>
+              </div> ); })}
+            {(data.depts ?? []).length === 0 && <p className="muted">No departments yet.</p>}
+          </div>
+        </div>
+      )}
       <div className="grid cols-2" style={{ marginTop: 14 }}>
         <div className="card">
           <h3>⚠ Low stock</h3>
@@ -348,6 +407,34 @@ export function Dashboard({ profile }) {
 }
 
 /* ---------------- Tokens ---------------- */
+/* Short, human-friendly invoice numbers for display (Module 5). The
+   database keeps its long internal numbers untouched — this only
+   changes what people see on receipts, slips and in Finance. OPD
+   numbers come from the token itself: department code + token
+   number (OPD-0012). Pharmacy is PH- plus the last digits of its
+   number; lab / operation / other use the type code plus the last
+   characters of the id embedded in the long number. */
+export function deptCode(name) {
+  const n = String(name ?? "").trim();
+  if (!n) return "OPD";
+  if (/opd/i.test(n)) return "OPD";
+  return n.replace(/[^A-Za-z]/g, "").slice(0, 3).toUpperCase() || "OPD";
+}
+export function shortOpdNumber(deptName, tokenNumber) {
+  return `${deptCode(deptName)}-${String(tokenNumber ?? 0).padStart(4, "0")}`;
+}
+export function shortInvoice(inv, ctx) {
+  const num = String(inv?.invoice_number ?? "");
+  if (!num) return "\u2014";
+  const type = inv?.invoice_type ?? "";
+  if (type === "pharmacy") { const d = num.replace(/\D/g, ""); return "PH-" + (d.slice(-6) || num); }
+  const seg = num.split("-").pop() ?? "";
+  if (type === "opd" && ctx?.tokByDash?.[seg]) { const t = ctx.tokByDash[seg]; return shortOpdNumber(ctx.deptNameById?.[t.department_id], t.token_number); }
+  const codes = { opd: "OPD", lab: "LAB", operation: "OPR", admission: "ADM", other: "OTH" };
+  const tail = seg.replace(/[^A-Za-z0-9]/g, "").slice(-6).toUpperCase();
+  return tail ? `${codes[type] ?? "INV"}-${tail}` : num;
+}
+
 export function Tokens({ profile, tvMode = false }) {
   const tid = profile.tenant_id;
   const [msg, setMsg] = useState({ err: "", ok: "" });
@@ -413,7 +500,7 @@ export function Tokens({ profile, tvMode = false }) {
       ...(visitLabel ? [{ k: "Visit", v: visitLabel }] : []),
       ...(spec ? [{ k: "Specialty", v: spec }] : []),
       { k: "Fee", v: rs(tok.fee_pkr) },
-      ...(inv ? [{ k: "Invoice", v: inv.invoice_number }] : []),
+      { k: "Invoice", v: shortOpdNumber(dName(tok.department_id), tok.token_number) },
       { k: "Date", v: tok.token_date ?? todayStr() },
     ],
   });
@@ -466,7 +553,7 @@ export function Tokens({ profile, tvMode = false }) {
       setSlip(doc);
       printReceipt?.(doc);
       setMsg({ err: "", ok: fee > 0
-        ? `Token #${token.token_number} issued — ${rs(fee)} OPD fee posted to Finance${inv ? ` (${inv.invoice_number})` : ""}.`
+        ? `Token #${token.token_number} issued — ${rs(fee)} OPD fee posted to Finance${inv ? ` (${shortOpdNumber(dName(token.department_id), token.token_number)})` : ""}.`
         : `Token #${token.token_number} issued — fee is 0, so no invoice was created.` });
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
@@ -599,6 +686,22 @@ export function Tokens({ profile, tvMode = false }) {
         { icon: "🩺", label: "In consultation", value: (data?.tokens ?? []).filter((t) => t.status === "in_consultation").length, tone: "blue" },
         { icon: "💰", label: "Token fees today", value: rs((data?.tokens ?? []).filter((t) => t.status !== "skipped").reduce((a, t) => a + (Number(t.fee_pkr) || 0), 0)), tone: "violet" },
       ]} />}
+      {!tvMode && (data?.depts ?? []).length > 0 && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <h3 style={{ marginTop: 0 }}>Queue by department — today</h3>
+          <table>
+            <thead><tr><th>Department</th><th>Tokens</th><th>Waiting</th><th>In consultation</th><th>Completed</th><th>Fees</th></tr></thead>
+            <tbody>
+              {(data?.depts ?? []).map((d) => { const rows = (data?.tokens ?? []).filter((t) => t.department_id === d.id); return (
+                <tr key={d.id}><td><b>{d.name}</b></td><td>{rows.length}</td>
+                  <td>{rows.filter((t) => t.status === "waiting").length}</td>
+                  <td>{rows.filter((t) => t.status === "in_consultation").length}</td>
+                  <td>{rows.filter((t) => t.status === "completed").length}</td>
+                  <td>{rs(rows.filter((t) => t.status !== "skipped").reduce((a, t) => a + (Number(t.fee_pkr) || 0), 0))}</td></tr> ); })}
+            </tbody>
+          </table>
+        </div>
+      )}
       {docSkipNote && <div className="notice" style={{ border: "1px solid #f59e0b", background: "#fffbeb", borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 13 }}>{docSkipNote}</div>}
       {!tvMode && (
         <div className="card" style={{ marginBottom: 14 }}>
@@ -673,7 +776,7 @@ export function Tokens({ profile, tvMode = false }) {
           <div className="row">
             <span>Just issued: <b>Token #{lastIssued.token.token_number}</b> — {pName(lastIssued.token.patient_id)} · Fee {rs(lastIssued.token.fee_pkr)}{lastIssued.visit === "followup" ? <> · <b>Follow-up</b></> : null}
               {lastIssued.specialty ? <> · Specialty <b>{lastIssued.specialty}</b></> : null}
-              {lastIssued.inv ? <> · Invoice <b>{lastIssued.inv.invoice_number}</b></> : null}</span>
+              {lastIssued.inv ? <> · Invoice <b>{shortOpdNumber(dName(lastIssued.token.department_id), lastIssued.token.token_number)}</b></> : null}</span>
             <div className="spacer" />
             <button className="btn small ghost" onClick={() => printReceipt?.(tokenDoc(lastIssued.token, lastIssued.inv, lastIssued.specialty))}>Print receipt</button>
           </div>
@@ -739,6 +842,7 @@ export function Tokens({ profile, tvMode = false }) {
                       { k: "Department", v: dName(t.department_id) },
                       { k: "Doctor", v: docName(t.doctor_id) },
                       { k: "Fee", v: rs(t.fee_pkr) },
+                      { k: "Invoice", v: shortOpdNumber(dName(t.department_id), t.token_number) },
                       { k: "Status", v: t.status },
                       { k: "Date", v: t.token_date ?? todayStr() },
                     ],
@@ -849,7 +953,13 @@ export function Patients({ profile }) {
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [f, setF] = useState({ full_name: "", gender: "male", age_years: "", phone: "", cnic: "", blood_group: "", city: "", address: "" });
   const { data, reload } = useLoad(async () =>
-    q(supabase.from("patients").select("*").eq("is_active", true).order("created_at", { ascending: false }).limit(200)), [tid]);
+    Promise.all([
+      q(supabase.from("patients").select("*").eq("is_active", true).order("created_at", { ascending: false }).limit(200)),
+      // Exact register size — the list above is capped at 200 rows, so
+      // the headline count comes from a head-count query (Module 7),
+      // matching the Dashboard's "Patients (clinic)" number.
+      supabase.from("patients").select("id", { count: "exact", head: true }).eq("is_active", true).then((r) => r.count ?? 0).catch(() => 0),
+    ]).then(([rows, total]) => ({ rows: rows ?? [], total })), [tid]);
   async function add() {
     setMsg({ err: "", ok: "" });
     try {
@@ -900,10 +1010,10 @@ export function Patients({ profile }) {
       <h2>Patients</h2>
       <Notice err={msg.err} ok={msg.ok} />
       <StatCards items={[
-        { icon: "🧑", label: "Registered patients", value: (data ?? []).length },
-        { icon: "🆕", label: "New today", value: (data ?? []).filter((x) => String(x.created_at ?? "").slice(0, 10) === todayStr()).length, tone: "blue" },
-        { icon: "📅", label: "New this month", value: (data ?? []).filter((x) => String(x.created_at ?? "").slice(0, 7) === todayStr().slice(0, 7)).length, tone: "violet" },
-        { icon: "⚠", label: "Allergies recorded", value: (data ?? []).filter((x) => x.allergies).length, tone: "amber" },
+        { icon: "🧑", label: "Registered patients", value: data?.total ?? 0 },
+        { icon: "🆕", label: "New today", value: (data?.rows ?? []).filter((x) => String(x.created_at ?? "").slice(0, 10) === todayStr()).length, tone: "blue" },
+        { icon: "📅", label: "New this month", value: (data?.rows ?? []).filter((x) => String(x.created_at ?? "").slice(0, 7) === todayStr().slice(0, 7)).length, tone: "violet" },
+        { icon: "⚠", label: "Allergies recorded", value: (data?.rows ?? []).filter((x) => x.allergies).length, tone: "amber" },
       ]} />
       {canManage && (
       <div className="card" style={{ marginBottom: 14 }}>
@@ -945,7 +1055,7 @@ export function Patients({ profile }) {
         <table>
           <thead><tr><th>MR #</th><th>Name</th><th>Gender</th><th>Age</th><th>Phone</th><th>City</th><th>Actions</th></tr></thead>
           <tbody>
-            {(data ?? []).map((p) => <tr key={p.id}><td>{p.mr_number}</td><td><b>{p.full_name}</b></td><td>{p.gender ?? ""}</td><td>{p.age_years ?? ""}</td><td>{p.phone ?? ""}</td><td>{p.city ?? ""}</td><td>{canManage && <div className="row"><button className="btn small ghost" onClick={() => startEdit(p)}>Edit</button><button className="btn small danger" onClick={() => deactivate(p)}>Delete</button></div>}</td></tr>)}
+            {(data?.rows ?? []).map((p) => <tr key={p.id}><td>{p.mr_number}</td><td><b>{p.full_name}</b></td><td>{p.gender ?? ""}</td><td>{p.age_years ?? ""}</td><td>{p.phone ?? ""}</td><td>{p.city ?? ""}</td><td>{canManage && <div className="row"><button className="btn small ghost" onClick={() => startEdit(p)}>Edit</button><button className="btn small danger" onClick={() => deactivate(p)}>Delete</button></div>}</td></tr>)}
           </tbody>
         </table>
       </div>
@@ -962,10 +1072,29 @@ export function CareQueue({ profile, title, variant = "doctor" }) {
     const [tokens, patients, allToday, completed] = await Promise.all([
       q(supabase.from("tokens").select("*").eq("token_date", todayStr()).in("status", ["waiting", "in_consultation"]).order("token_number")),
       q(supabase.from("patients").select("id,full_name,mr_number,age_years,gender,allergies")),
-      q(supabase.from("tokens").select("status").eq("token_date", todayStr())),
+      q(supabase.from("tokens").select("status,doctor_id,patient_id").eq("token_date", todayStr())),
       q(supabase.from("tokens").select("*").eq("token_date", todayStr()).eq("status", "completed").order("updated_at", { ascending: false })),
     ]);
-    return { tokens: tokens ?? [], patients: patients ?? [], allToday: allToday ?? [], completed: completed ?? [] };
+    /* Role-dashboard extras — TOLERANT reads: if a table is not readable
+       by this role, the extra degrades to empty instead of breaking the
+       whole queue screen (the queue itself above stays strict). */
+    const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
+    const myDir = await tol(supabase.from("staff_directory").select("id").eq("user_profile_id", profile.id).limit(1));
+    const myStaffId = myDir[0]?.id ?? null;
+    let myLabPending = [], myConsults = 0, bedsOcc = [], wards = [], medsDue = [];
+    if (isDoc && myStaffId) {
+      myLabPending = await tol(supabase.from("lab_orders").select("id,test_name,patient_id,created_at").eq("ordered_by", myStaffId).eq("status", "pending").order("created_at", { ascending: false }).limit(20));
+      myConsults = (await tol(supabase.from("consultations").select("id").eq("doctor_id", myStaffId).gte("created_at", todayStr()))).length;
+    }
+    if (!isDoc) {
+      const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+      [bedsOcc, wards, medsDue] = await Promise.all([
+        tol(supabase.from("beds").select("id,bed_number,ward_id,patient_id").not("patient_id", "is", null)),
+        tol(supabase.from("wards").select("id,name")),
+        tol(supabase.from("medication_administration").select("id,patient_id,dose,route,scheduled_at,status").eq("status", "pending").lt("scheduled_at", tomorrow + "T00:00:00").order("scheduled_at")),
+      ]);
+    }
+    return { tokens: tokens ?? [], patients: patients ?? [], allToday: allToday ?? [], completed: completed ?? [], myStaffId, myLabPending, myConsults, bedsOcc, wards, medsDue };
   }, []);
   useEffect(() => { const i = setInterval(reload, 5000); return () => clearInterval(i); }, [reload]);
   async function setStatus(t, status) {
@@ -984,6 +1113,54 @@ export function CareQueue({ profile, title, variant = "doctor" }) {
         { icon: "🩺", label: "In consultation", value: (data?.allToday ?? []).filter((t) => t.status === "in_consultation").length, tone: "blue" },
         { icon: "✅", label: isDoc ? "Consulted today" : "Completed today", value: (data?.allToday ?? []).filter((t) => t.status === "completed").length, tone: "violet" },
       ]} />
+      {isDoc && (
+        <>
+          <StatCards items={[
+            { icon: "🧑‍🤝‍🧑", label: "My patients today", value: data?.myStaffId ? (data?.allToday ?? []).filter((t) => t.doctor_id === data.myStaffId).length : 0 },
+            { icon: "⏳", label: "Waiting for me", value: data?.myStaffId ? (data?.allToday ?? []).filter((t) => t.doctor_id === data.myStaffId && t.status === "waiting").length : 0, tone: "amber" },
+            { icon: "✍️", label: "Consulted by me", value: data?.myConsults ?? 0, tone: "blue" },
+            { icon: "🧪", label: "My lab reports pending", value: (data?.myLabPending ?? []).length, tone: "violet" },
+          ]} />
+          <div className="card" style={{ marginBottom: 14 }}>
+            <h3 style={{ marginTop: 0 }}>My pending lab reports</h3>
+            {(data?.myLabPending ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No lab reports are pending for tests you ordered.</p> : (
+              <table><thead><tr><th>Patient</th><th>Test</th><th>Ordered</th></tr></thead><tbody>
+                {(data?.myLabPending ?? []).map((o) => { const p = pName(o.patient_id); return (
+                  <tr key={o.id}><td><b>{p?.full_name ?? "—"}</b> <span className="muted">{p?.mr_number ?? ""}</span></td><td>{o.test_name}</td><td>{String(o.created_at ?? "").slice(0, 10)}</td></tr> ); })}
+              </tbody></table>
+            )}
+          </div>
+        </>
+      )}
+      {!isDoc && (
+        <>
+          <StatCards items={[
+            { icon: "🌡️", label: "Vitals pending (in queue)", value: (data?.allToday ?? []).filter((t) => t.status === "waiting" || t.status === "in_consultation").length, tone: "amber" },
+            { icon: "🛏️", label: "Admitted patients", value: (data?.bedsOcc ?? []).length, tone: "blue" },
+            { icon: "💊", label: "Medication due", value: (data?.medsDue ?? []).length, tone: "violet" },
+          ]} />
+          <div className="grid cols-2" style={{ marginBottom: 14 }}>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Medication due</h3>
+              {(data?.medsDue ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No medication is due.</p> : (
+                <table><thead><tr><th>Patient</th><th>Dose</th><th>Route</th><th>Scheduled</th></tr></thead><tbody>
+                  {(data?.medsDue ?? []).map((m) => { const p = pName(m.patient_id); return (
+                    <tr key={m.id}><td><b>{p?.full_name ?? "—"}</b></td><td>{m.dose ?? "—"}</td><td>{m.route ?? "—"}</td><td>{m.scheduled_at ? new Date(m.scheduled_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}</td></tr> ); })}
+                </tbody></table>
+              )}
+            </div>
+            <div className="card">
+              <h3 style={{ marginTop: 0 }}>Admitted patients</h3>
+              {(data?.bedsOcc ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No patients are admitted right now.</p> : (
+                <table><thead><tr><th>Ward</th><th>Bed</th><th>Patient</th></tr></thead><tbody>
+                  {(data?.bedsOcc ?? []).map((b) => { const p = pName(b.patient_id); const w = (data?.wards ?? []).find((x) => x.id === b.ward_id); return (
+                    <tr key={b.id}><td>{w?.name ?? "—"}</td><td>{b.bed_number}</td><td><b>{p?.full_name ?? "—"}</b> <span className="muted">{p?.mr_number ?? ""}</span></td></tr> ); })}
+                </tbody></table>
+              )}
+            </div>
+          </div>
+        </>
+      )}
       <div className="card">
         <table>
           <thead><tr><th>Token</th><th>Patient</th><th>Age/Gender</th><th>Status</th><th>Actions</th></tr></thead>
@@ -1032,6 +1209,14 @@ export function Pharmacy({ profile }) {
   const [fefoMed, setFefoMed] = useState("");
   const [fefoNote, setFefoNote] = useState("");
   const [lastSale, setLastSale] = useState(null);
+  /* POS cart (Module 2): many medicines in ONE sale. A line is one
+     batch with a quantity; checkout writes one invoice, one stock
+     movement per line, and one payment (unless the sale is credit). */
+  const [cart, setCart] = useState([]);
+  const [disc, setDisc] = useState({ pct: "", rsAmt: "" });
+  const [payMethod, setPayMethod] = useState("cash");
+  const [barcode, setBarcode] = useState("");
+  const [bcNote, setBcNote] = useState("");
   const { printReceipt } = usePrint() ?? {};
   const [batchFor, setBatchFor] = useState(null);
   const [bf, setBf] = useState({ batch_no: "", quantity: "", expiry_date: "", purchase_price: "", sale_price: "" });
@@ -1041,7 +1226,15 @@ export function Pharmacy({ profile }) {
       q(supabase.from("medicines").select("*").eq("is_active", true).order("name")),
       q(supabase.from("medicine_batches").select("*").order("expiry_date")),
     ]);
-    return { meds: meds ?? [], batches: batches ?? [] };
+    /* Dashboard extras — tolerant reads, same reasoning as CareQueue. */
+    const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
+    const [salesToday, pendRx, rxPatients, dir] = await Promise.all([
+      tol(supabase.from("invoices").select("id,total_amount,created_at").eq("invoice_type", "pharmacy").gte("created_at", todayStr())),
+      tol(supabase.from("prescriptions").select("id,patient_id,doctor_id,created_at").eq("status", "pending").order("created_at", { ascending: false }).limit(20)),
+      tol(supabase.from("patients").select("id,full_name,mr_number")),
+      tol(supabase.from("staff_directory").select("id,full_name")),
+    ]);
+    return { meds: meds ?? [], batches: batches ?? [], salesToday, pendRx, rxPatients, dir };
   }, [tid]);
   /* A medicine only becomes sellable once it has a batch with quantity.
      Medicines added from the catalog without a batch get their first
@@ -1081,36 +1274,107 @@ export function Pharmacy({ profile }) {
     setSel({ ...sel, batch_id: pick.id });
     setFefoNote(`FEFO batch: ${pick.batch_no} · exp ${pick.expiry_date} · stock ${pick.quantity}${fresh ? "" : " — ⚠ all batches are expired!"}`);
   }
-  async function sell() {
+  const subtotal = cart.reduce((a, l) => a + l.price * l.qty, 0);
+  const discAmt = Math.min(Math.max(Number(disc.rsAmt) || 0, 0), subtotal);
+  const cartTotal = subtotal - discAmt;
+  function setDiscPct(v) { setDisc({ pct: v, rsAmt: v === "" ? "" : String(Math.round(subtotal * (Number(v) || 0) / 100)) }); }
+  function setDiscRs(v) { setDisc({ rsAmt: v, pct: v === "" || subtotal === 0 ? "" : String(Math.round(((Number(v) || 0) / subtotal) * 1000) / 10) }); }
+  function fefoBatchFor(medId) {
+    const bs = (data?.batches ?? []).filter((b) => b.medicine_id === medId && Number(b.quantity) > 0);
+    if (!bs.length) return null;
+    return bs.find((b) => b.expiry_date >= todayStr()) ?? bs[0];
+  }
+  function addLine(b, qty) {
+    const m = medName(b.medicine_id);
+    const linePrice = Number(b.sale_price ?? m?.sale_price ?? 0);
+    setCart((prev) => {
+      const ex = prev.find((x) => x.batch_id === b.id);
+      if (ex) return prev.map((x) => x.batch_id === b.id ? { ...x, qty: x.qty + qty } : x);
+      return [...prev, { batch_id: b.id, medicine_id: b.medicine_id, name: m?.name ?? "Medicine", batch_no: b.batch_no, price: linePrice, qty }];
+    });
+  }
+  function addToCart() {
+    setMsg({ err: "", ok: "" }); setBcNote("");
+    if (!batch) { setMsg({ err: "Select a medicine / batch first.", ok: "" }); return; }
+    const qty = Number(sel.qty);
+    if (!qty || qty < 1) { setMsg({ err: "Enter a valid quantity.", ok: "" }); return; }
+    const inCart = cart.find((x) => x.batch_id === batch.id)?.qty ?? 0;
+    if (inCart + qty > Number(batch.quantity)) { setMsg({ err: `Only ${batch.quantity} in stock for batch ${batch.batch_no} (${inCart} already in the cart).`, ok: "" }); return; }
+    addLine(batch, qty);
+    setSel({ ...sel, qty: 1 });
+  }
+  /* Barcode scanners type the code and press Enter — the same handler
+     serves the "Add by barcode" button. The barcode lives on the
+     medicine; the batch is picked FEFO, one unit per scan. */
+  function scanBarcode() {
+    const code = barcode.trim();
+    if (!code) return;
+    const m = (data?.meds ?? []).find((x) => String(x.barcode ?? "") === code);
+    if (!m) { setBcNote(`No medicine found with barcode ${code}.`); return; }
+    const b = fefoBatchFor(m.id);
+    if (!b) { setBcNote(`${m.name} has no stock.`); return; }
+    const inCart = cart.find((x) => x.batch_id === b.id)?.qty ?? 0;
+    if (inCart + 1 > Number(b.quantity)) { setBcNote(`Only ${b.quantity} in stock for ${m.name}.`); return; }
+    addLine(b, 1);
+    setBcNote(`Added: ${m.name} (batch ${b.batch_no}).`);
+    setBarcode("");
+  }
+  function saleDoc(sale) {
+    return {
+      title: "Pharmacy Receipt", big: rs(sale.total),
+      lines: [
+        { k: "Invoice", v: shortInvoice({ invoice_number: sale.invNo, invoice_type: "pharmacy" }) },
+        ...sale.lines.map((l) => ({ k: `${l.name} × ${l.qty}`, v: rs(l.price * l.qty) })),
+        { k: "Subtotal", v: rs(sale.subtotal) },
+        ...(sale.discount > 0 ? [{ k: "Discount", v: "− " + rs(sale.discount) }] : []),
+        { k: "Total", v: rs(sale.total) },
+        { k: "Payment", v: sale.payMethod === "credit" ? "Credit (unpaid)" : sale.payMethod === "card" ? "Card" : "Cash" },
+        ...(sale.payMethod === "credit" ? [{ k: "Balance due", v: rs(sale.total) }] : []),
+        { k: "Date", v: todayStr() },
+      ],
+    };
+  }
+  async function checkout() {
     setMsg({ err: "", ok: "" });
     try {
-      if (!batch) throw new Error("Select a batch.");
-      const qty = Number(sel.qty);
-      if (!qty || qty < 1) throw new Error("Enter a valid quantity.");
-      const total = price * qty;
+      if (!cart.length) throw new Error("The cart is empty — add at least one medicine.");
+      for (const l of cart) {
+        const b = (data?.batches ?? []).find((x) => x.id === l.batch_id);
+        if (!b || l.qty > Number(b.quantity)) throw new Error(`Not enough stock for ${l.name} (batch ${l.batch_no}) — available ${b?.quantity ?? 0}.`);
+      }
+      const credit = payMethod === "credit";
       const invNo = "PH-" + Date.now();
       const inv = await q(supabase.from("invoices").insert({
         tenant_id: tid, invoice_number: invNo, invoice_type: "pharmacy",
-        subtotal: total, discount_amount: 0, tax_amount: 0, total_amount: total,
-        amount_paid: total, balance_amount: 0, status: "paid",
+        subtotal, discount_amount: discAmt, tax_amount: 0, total_amount: cartTotal,
+        amount_paid: credit ? 0 : cartTotal, balance_amount: credit ? cartTotal : 0,
+        // invoices_status_check allows 'paid' / 'partial' / 'unpaid'
+        // (probed live) — a credit sale is 'unpaid' with a balance.
+        status: credit ? "unpaid" : "paid",
       }).select().single());
       try {
-        await q(supabase.from("stock_movements").insert({
-          tenant_id: tid, medicine_id: batch.medicine_id, batch_id: batch.id,
-          // Live DB check constraint + seed data use 'out' for stock leaving
-          // the shelf ('sale' is not an accepted movement_type there).
-          movement_type: "out", quantity: -qty, reference_type: "invoice",
+        // Live DB check constraint + seed data use 'out' for stock
+        // leaving the shelf ('sale' is not an accepted movement_type).
+        await q(supabase.from("stock_movements").insert(cart.map((l) => ({
+          tenant_id: tid, medicine_id: l.medicine_id, batch_id: l.batch_id,
+          movement_type: "out", quantity: -l.qty, reference_type: "invoice",
           reference_id: inv.id, performed_by: profile.id,
-        }));
+        }))));
       } catch (e) {
-        await q(supabase.from("invoices").delete().eq("id", inv.id));
+        await supabase.from("stock_movements").delete().eq("reference_id", inv.id);
+        await supabase.from("invoices").delete().eq("id", inv.id);
         throw e;
       }
-      await q(supabase.from("payments").insert({
-        tenant_id: tid, invoice_id: inv.id, amount: total, payment_method: "cash", received_by: profile.id,
-      }));
-      setLastSale({ invNo, name: medName(batch.medicine_id)?.name ?? "Medicine", batch: batch.batch_no, qty, price, total });
-      setMsg({ err: "", ok: `Sale complete — ${invNo}, ${rs(total)}.` });
+      if (!credit) {
+        await q(supabase.from("payments").insert({
+          tenant_id: tid, invoice_id: inv.id, amount: cartTotal, payment_method: payMethod, received_by: profile.id,
+        }));
+      }
+      const sale = { invNo, lines: cart, subtotal, discount: discAmt, total: cartTotal, payMethod };
+      setLastSale(sale);
+      printReceipt?.(saleDoc(sale));
+      setCart([]); setDisc({ pct: "", rsAmt: "" }); setPayMethod("cash");
+      setMsg({ err: "", ok: credit ? `Credit sale complete — ${invNo}, ${rs(cartTotal)} (unpaid, balance due).` : `Sale complete — ${invNo}, ${rs(cartTotal)}.` });
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
   }
@@ -1127,7 +1391,30 @@ export function Pharmacy({ profile }) {
         { icon: "⏰", label: "Expiring in 30 days", value: (data?.batches ?? []).filter((b) => Number(b.quantity) > 0 && b.expiry_date >= todayStr() && b.expiry_date <= new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)).length, tone: "violet" },
       ]} />
       <div className="card" style={{ marginBottom: 14 }}>
-        <h3>New sale</h3>
+        <h3 style={{ marginTop: 0 }}>Today at the pharmacy</h3>
+        <div className="row" style={{ gap: 24, flexWrap: "wrap" }}>
+          <div>Sales today: <b>{rs((data?.salesToday ?? []).reduce((a, i) => a + (Number(i.total_amount) || 0), 0))}</b> <span className="muted">({(data?.salesToday ?? []).length} bills)</span></div>
+          <div>Pending prescriptions: <b>{(data?.pendRx ?? []).length}</b></div>
+        </div>
+        {(data?.pendRx ?? []).length > 0 && (
+          <table style={{ marginTop: 10 }}>
+            <thead><tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Status</th></tr></thead>
+            <tbody>
+              {(data?.pendRx ?? []).map((r) => { const pt = (data?.rxPatients ?? []).find((px) => px.id === r.patient_id); const dc = (data?.dir ?? []).find((sx) => sx.id === r.doctor_id); return (
+                <tr key={r.id}><td><b>{pt?.full_name ?? "—"}</b> <span className="muted">{pt?.mr_number ?? ""}</span></td><td>{dc?.full_name ?? "—"}</td><td>{String(r.created_at ?? "").slice(0, 10)}</td><td><span className="pill amber">pending</span></td></tr> ); })}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>New sale — cart</h3>
+        <div className="row" style={{ gap: 8, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: "1 1 240px" }}><label>Barcode — scan or type the code, then Enter</label>
+            <input value={barcode} placeholder="e.g. 896000000001" onChange={(e) => setBarcode(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); scanBarcode(); } }} /></div>
+          <button className="btn ghost" onClick={scanBarcode}>Add by barcode</button>
+          {bcNote && <span className="muted">{bcNote}</span>}
+        </div>
         <div className="row" style={{ gap: 8, alignItems: "flex-end", marginBottom: 10, flexWrap: "wrap" }}>
           <div style={{ flex: "1 1 280px" }}><label>Medicine (FEFO — earliest-expiry batch is auto-selected)</label>
             <select value={fefoMed} onChange={(e) => pickFefo(e.target.value)}>
@@ -1143,25 +1430,50 @@ export function Pharmacy({ profile }) {
               {data?.batches.map((b) => <option key={b.id} value={b.id}>{medName(b.medicine_id)?.name} · Batch {b.batch_no} · Stock {b.quantity} · {rs(b.sale_price ?? medName(b.medicine_id)?.sale_price ?? 0)} · exp {b.expiry_date}</option>)}
             </select></div>
           <div><label>Quantity</label><input type="number" min="1" value={sel.qty} onChange={(e) => setSel({ ...sel, qty: e.target.value })} /></div>
-          <div><label>Total</label><div className="big" style={{ fontSize: 22 }}>{rs(price * Number(sel.qty || 0))}</div></div>
+          <div><label>Line total</label><div className="big" style={{ fontSize: 22 }}>{rs(price * Number(sel.qty || 0))}</div></div>
         </div>
-        <div style={{ marginTop: 12 }}><button className="btn" onClick={sell}>Complete Sale</button>
-          <span className="muted" style={{ marginLeft: 10 }}>Overselling is blocked by the database — stock cannot go negative.</span></div>
+        <div className="row" style={{ marginTop: 12, gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <button className="btn" onClick={addToCart}>＋ Add to cart</button>
+          <span className="muted">Pick a medicine or scan its barcode, set the quantity, add — repeat for more medicines, then complete the sale below. Overselling is blocked by the database — stock cannot go negative.</span>
+        </div>
+        {cart.length > 0 && (
+          <div style={{ marginTop: 14, borderTop: "1px solid #e2e8f0", paddingTop: 12 }}>
+            <table>
+              <thead><tr><th>Medicine</th><th>Batch</th><th>Price</th><th>Qty</th><th>Amount</th><th></th></tr></thead>
+              <tbody>
+                {cart.map((l) => (
+                  <tr key={l.batch_id}>
+                    <td><b>{l.name}</b></td><td>{l.batch_no}</td><td>{rs(l.price)}</td>
+                    <td><input type="number" min="1" style={{ width: 70 }} value={l.qty} onChange={(e) => setCart(cart.map((x) => x.batch_id === l.batch_id ? { ...x, qty: Math.max(1, Number(e.target.value) || 1) } : x))} /></td>
+                    <td>{rs(l.price * l.qty)}</td>
+                    <td><button className="btn small ghost" onClick={() => setCart(cart.filter((x) => x.batch_id !== l.batch_id))}>✕ Remove</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="grid cols-4" style={{ marginTop: 10 }}>
+              <div><label>Subtotal</label><div className="big" style={{ fontSize: 20 }}>{rs(subtotal)}</div></div>
+              <div><label>Discount %</label><input type="number" min="0" value={disc.pct} onChange={(e) => setDiscPct(e.target.value)} /></div>
+              <div><label>Discount (Rs)</label><input type="number" min="0" value={disc.rsAmt} onChange={(e) => setDiscRs(e.target.value)} /></div>
+              <div><label>Total</label><div className="big" style={{ fontSize: 20 }}>{rs(cartTotal)}</div></div>
+            </div>
+            <div className="row" style={{ marginTop: 10, gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <div><label>Payment</label>
+                <select value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                  <option value="cash">Cash</option>
+                  <option value="card">Card</option>
+                  <option value="credit">Credit (udhaar — pay later)</option>
+                </select></div>
+              {payMethod === "credit" && <span className="muted">The bill stays <b>unpaid</b> in Finance with a balance of {rs(cartTotal)}.</span>}
+              <div className="spacer" />
+              <button className="btn" onClick={checkout}>Complete Sale — {rs(cartTotal)}</button>
+            </div>
+          </div>
+        )}
         {lastSale && (
           <div className="row" style={{ marginTop: 10 }}>
-            <span>Last sale: <b>{lastSale.invNo}</b> — {lastSale.name} × {lastSale.qty} = {rs(lastSale.total)}</span>
-            <button className="btn small ghost" onClick={() => printReceipt?.({
-              title: "Pharmacy Receipt",
-              lines: [
-                { k: "Invoice", v: lastSale.invNo },
-                { k: "Medicine", v: lastSale.name },
-                { k: "Batch", v: lastSale.batch },
-                { k: "Qty", v: lastSale.qty },
-                { k: "Price", v: rs(lastSale.price) },
-                { k: "Total", v: rs(lastSale.total) },
-                { k: "Date", v: todayStr() },
-              ],
-            })}>Print receipt</button>
+            <span>Last sale: <b>{lastSale.invNo}</b> — {lastSale.lines.length} item(s) = {rs(lastSale.total)} ({lastSale.payMethod === "credit" ? "credit — unpaid" : lastSale.payMethod})</span>
+            <button className="btn small ghost" onClick={() => printReceipt?.(saleDoc(lastSale))}>Print receipt</button>
           </div>
         )}
       </div>
@@ -1250,7 +1562,7 @@ export function Finance({ profile }) {
   const tid = profile?.tenant_id;
   const { printReceipt } = usePrint() ?? {};
   const [msg, setMsg] = useState({ err: "", ok: "" });
-  const [ef, setEf] = useState({ title: "", category: "Supplies", amount: "", expense_date: todayStr(), payment_method: "cash", notes: "" });
+  const [ef, setEf] = useState({ title: "", category: "Other", amount: "", expense_date: todayStr(), payment_method: "cash", notes: "" });
   const setE = (k) => (e) => setEf({ ...ef, [k]: e.target.value });
   const { data, reload } = useLoad(async () => {
     const [inv, pay, exp, payroll, dir] = await Promise.all([
@@ -1260,9 +1572,21 @@ export function Finance({ profile }) {
       q(supabase.from("payroll").select("*").order("created_at", { ascending: false }).limit(200)),
       q(supabase.from("staff_directory").select("id,full_name,user_profile_id,role")),
     ]);
-    return { inv: inv ?? [], pay: pay ?? [], exp: exp ?? [], payroll: payroll ?? [], dir: dir ?? [] };
+    /* Token + department lookups so OPD invoices can be shown with
+       short numbers (Module 5). Tolerant: if they fail, Finance
+       still opens and falls back to the tail of the long number. */
+    const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
+    const [toks, depts] = await Promise.all([
+      tol(supabase.from("tokens").select("id,token_number,department_id").order("created_at", { ascending: false }).limit(500)),
+      tol(supabase.from("departments").select("id,name")),
+    ]);
+    return { inv: inv ?? [], pay: pay ?? [], exp: exp ?? [], payroll: payroll ?? [], dir: dir ?? [], toks, depts };
   }, []);
   const invById = new Map((data?.inv ?? []).map((x) => [x.id, x]));
+  const finCtx = {
+    tokByDash: Object.fromEntries((data?.toks ?? []).map((t) => [String(t.id).replaceAll("-", ""), t])),
+    deptNameById: Object.fromEntries((data?.depts ?? []).map((d) => [d.id, d.name])),
+  };
   const staffById = new Map((data?.dir ?? []).map((x) => [x.id, x]));
   const salaryDebits = (data?.payroll ?? []).filter((r) => r.status === "paid").map((r) => ({
     key: "s" + r.id, date: String(r.paid_at ?? r.updated_at ?? "").slice(0, 10), ts: new Date(r.paid_at ?? r.updated_at ?? 0).getTime() || 0,
@@ -1288,7 +1612,7 @@ export function Finance({ profile }) {
   }
   const credits = (data?.pay ?? []).map((p) => { const inv = invById.get(p.invoice_id); return {
     key: "p" + p.id, date: String(p.paid_at ?? p.created_at ?? "").slice(0, 10), ts: new Date(p.paid_at ?? p.created_at ?? 0).getTime() || 0,
-    desc: inv ? `${inv.invoice_type.toUpperCase()} fee — ${inv.invoice_number}` : "Payment received", sub: p.reference_no ?? "",
+    desc: inv ? `${inv.invoice_type.toUpperCase()} fee — ${shortInvoice(inv, finCtx)}` : "Payment received", sub: p.reference_no ?? "",
     via: p.payment_method ?? "cash", credit: Number(p.amount) || 0, debit: 0,
   }; });
   const debits = (data?.exp ?? []).map((x) => ({
@@ -1302,6 +1626,26 @@ export function Finance({ profile }) {
   const totCredit = credits.reduce((a, e) => a + e.credit, 0);
   const totDebit = debits.reduce((a, e) => a + e.debit, 0) + salaryDebits.reduce((a, e) => a + e.debit, 0);
   const todayCredit = credits.filter((e) => e.date === todayStr()).reduce((a, e) => a + e.credit, 0);
+  const monthKey = todayStr().slice(0, 7);
+  const monthCredit = credits.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.credit, 0);
+  const expAll = [...debits, ...salaryDebits];
+  const todayDebit = expAll.filter((e) => e.date === todayStr()).reduce((a, e) => a + e.debit, 0);
+  const monthDebit = expAll.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.debit, 0);
+  /* Category breakdown: income grouped by invoice type (paid
+     invoices), expenses grouped by category — paid salaries count
+     under Salary (their ledger "via" is Payroll). Older free-text
+     categories (e.g. "Salaries", "Supplies") are folded into the
+     standard list by the matcher. */
+  const incTypes = [["OPD", ["opd"]], ["Pharmacy", ["pharmacy"]], ["Lab", ["lab"]], ["Operations", ["operation"]], ["Other", ["admission", "other"]]];
+  const isTodayD = (d) => d === todayStr();
+  const isMonthD = (d) => String(d ?? "").startsWith(monthKey);
+  /* Income by category is grouped from PAYMENTS RECEIVED (matched to
+     their invoice's type) — the same basis as "Income today" above,
+     so the category rows and the headline totals reconcile (Module 7). */
+  const sumInv = (types, when) => (data?.pay ?? []).filter((p) => { const inv = invById.get(p.invoice_id); return inv && types.includes(inv.invoice_type) && when(String(p.created_at).slice(0, 10)); }).reduce((a, p) => a + (Number(p.amount) || 0), 0);
+  const expCatOf = (via) => { const v = String(via ?? "").toLowerCase(); if (v.includes("salar") || v === "payroll") return "Salary"; if (v.includes("rent")) return "Rent"; if (v.includes("util")) return "Utilities"; if (v.includes("medicine") || v.includes("purchase")) return "Medicine Purchase"; if (v.includes("equip")) return "Equipment"; if (v.includes("maint")) return "Maintenance"; return "Other"; };
+  const expCats = ["Salary", "Rent", "Utilities", "Medicine Purchase", "Equipment", "Maintenance", "Other"];
+  const sumExp = (cat, when) => expAll.filter((e) => expCatOf(e.via) === cat && when(e.date)).reduce((a, e) => a + e.debit, 0);
   async function addExpense() {
     setMsg({ err: "", ok: "" });
     try {
@@ -1313,7 +1657,7 @@ export function Finance({ profile }) {
         payment_method: ef.payment_method, notes: ef.notes || null,
       }));
       setMsg({ err: "", ok: `Expense recorded: ${ef.title.trim()} — ${rs(Number(ef.amount))} (Debit).` });
-      setEf({ title: "", category: "Supplies", amount: "", expense_date: todayStr(), payment_method: "cash", notes: "" });
+      setEf({ title: "", category: "Other", amount: "", expense_date: todayStr(), payment_method: "cash", notes: "" });
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
   }
@@ -1323,11 +1667,36 @@ export function Finance({ profile }) {
       <p className="muted" style={{ marginTop: -6 }}>Accounts — money in (Credit), money out (Debit), and the running balance.</p>
       <Notice err={msg.err} ok={msg.ok} />
       <StatCards items={[
-        { icon: "💰", label: "Total credit (received)", value: rs(totCredit) },
-        { icon: "💸", label: "Total debit (expenses)", value: rs(totDebit), tone: "amber" },
-        { icon: "⚖️", label: "Net balance", value: rs(totCredit - totDebit), tone: "blue" },
-        { icon: "📅", label: "Collected today", value: rs(todayCredit), tone: "violet" },
+        { icon: "💰", label: "Income today", value: rs(todayCredit) },
+        { icon: "🗓️", label: "Income this month", value: rs(monthCredit), tone: "blue" },
+        { icon: "💸", label: "Expenses today", value: rs(todayDebit), tone: "amber" },
+        { icon: "📉", label: "Expenses this month", value: rs(monthDebit), tone: "violet" },
       ]} />
+      <p className="muted" style={{ marginTop: 0 }}>Overall net balance (all loaded entries): <b>{rs(totCredit - totDebit)}</b> · Total received {rs(totCredit)} · Total out {rs(totDebit)} · Salary approvals waiting: <b>{pendingSlips.length}</b></p>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Income &amp; expenses by category</h3>
+        <div className="grid cols-2">
+          <div>
+            <b>Income</b>
+            <table style={{ marginTop: 6 }}>
+              <thead><tr><th>Category</th><th>Today</th><th>This month</th></tr></thead>
+              <tbody>
+                {incTypes.map(([label, types]) => (<tr key={label}><td>{label}</td><td>{rs(sumInv(types, isTodayD))}</td><td>{rs(sumInv(types, isMonthD))}</td></tr>))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <b>Expenses</b>
+            <table style={{ marginTop: 6 }}>
+              <thead><tr><th>Category</th><th>Today</th><th>This month</th></tr></thead>
+              <tbody>
+                {expCats.map((c) => (<tr key={c}><td>{c}</td><td>{rs(sumExp(c, isTodayD))}</td><td>{rs(sumExp(c, isMonthD))}</td></tr>))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p className="muted" style={{ marginBottom: 0 }}>Income is grouped from payments received (by invoice type); expenses from recorded expenses, with paid salaries counted under Salary.</p>
+      </div>
       <div className="card" style={{ marginBottom: 14 }}>
         <h3 style={{ marginTop: 0 }}>Salary approvals{pendingSlips.length > 0 ? ` — ${pendingSlips.length} waiting` : ""}</h3>
         {pendingSlips.length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No salary slips are waiting. When HR prepares a slip, it appears here for payment.</p> : (
@@ -1374,7 +1743,7 @@ export function Finance({ profile }) {
         <h3 style={{ marginTop: 0 }}>Add expense (Debit)</h3>
         <div className="grid cols-4">
           <div><label>Title *</label><input value={ef.title} onChange={setE("title")} placeholder="e.g. Electricity bill" /></div>
-          <div><label>Category</label><select value={ef.category} onChange={setE("category")}><option>Supplies</option><option>Rent</option><option>Utilities</option><option>Salaries</option><option>Maintenance</option><option>Equipment</option><option>Other</option></select></div>
+          <div><label>Category</label><select value={ef.category} onChange={setE("category")}><option>Salary</option><option>Rent</option><option>Utilities</option><option>Medicine Purchase</option><option>Equipment</option><option>Maintenance</option><option>Other</option></select></div>
           <div><label>Amount (Rs) *</label><input type="number" value={ef.amount} onChange={setE("amount")} /></div>
           <div><label>Date</label><input type="date" value={ef.expense_date} onChange={setE("expense_date")} /></div>
           <div><label>Paid via</label><select value={ef.payment_method} onChange={setE("payment_method")}><option value="cash">Cash</option><option value="bank">Bank transfer</option><option value="card">Card</option></select></div>
@@ -1387,10 +1756,11 @@ export function Finance({ profile }) {
         <table>
           <thead><tr><th>Number</th><th>Type</th><th>Total</th><th>Paid</th><th>Status</th><th>Date</th><th>Print</th></tr></thead>
           <tbody>
-            {(data?.inv ?? []).map((i) => <tr key={i.id}><td>{i.invoice_number}</td><td>{i.invoice_type}</td><td>{rs(i.total_amount)}</td><td>{rs(i.amount_paid)}</td><td><span className={`pill ${i.status === "paid" ? "green" : "amber"}`}>{i.status}</span></td><td>{String(i.created_at).slice(0, 10)}</td><td><button className="btn small ghost" onClick={() => printReceipt?.({
+            {(data?.inv ?? []).map((i) => <tr key={i.id}><td><b>{shortInvoice(i, finCtx)}</b><br /><span className="muted" style={{ fontSize: 11 }}>{i.invoice_number}</span></td><td>{i.invoice_type}</td><td>{rs(i.total_amount)}</td><td>{rs(i.amount_paid)}</td><td><span className={`pill ${i.status === "paid" ? "green" : "amber"}`}>{i.status}</span></td><td>{String(i.created_at).slice(0, 10)}</td><td><button className="btn small ghost" onClick={() => printReceipt?.({
               title: "Invoice",
               lines: [
-                { k: "Number", v: i.invoice_number },
+                { k: "Number", v: shortInvoice(i, finCtx) },
+                { k: "Ref #", v: i.invoice_number },
                 { k: "Type", v: i.invoice_type },
                 { k: "Subtotal", v: rs(i.subtotal) },
                 { k: "Total", v: rs(i.total_amount) },
@@ -1419,18 +1789,98 @@ export function HR({ profile, session }) {
         ? supabase.from("settings").select("value").eq("tenant_id", profile.tenant_id).eq("key", "clinic_branding").maybeSingle().then((r) => r.data?.value ?? null)
         : Promise.resolve(null),
     ]);
-    return { staff: staff ?? [], priv: priv ?? [], att: att ?? [], profiles: profiles ?? [], branding };
+    const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
+    const [leaves, roster] = await Promise.all([
+      tol(supabase.from("leave_requests").select("id").eq("status", "pending")),
+      tol(supabase.from("duty_roster").select("id").eq("roster_date", todayStr())),
+    ]);
+    /* HR sections (Module 4): departments, full leave list, roster,
+       payroll overview, and advances. Advances live in a table added
+       by the round-2 SQL — read it separately so its absence shows a
+       setup note instead of failing the page. */
+    const [depts, leaveAll, rosterAll, payrollAll] = await Promise.all([
+      tol(supabase.from("departments").select("id,name,is_active").order("name")),
+      tol(supabase.from("leave_requests").select("*").order("created_at", { ascending: false }).limit(50)),
+      tol(supabase.from("duty_roster").select("*").gte("roster_date", new Date(Date.now() - 864e5).toISOString().slice(0, 10)).order("roster_date").limit(100)),
+      tol(supabase.from("payroll").select("*").order("period_year", { ascending: false }).order("period_month", { ascending: false }).limit(200)),
+    ]);
+    const advRes = await supabase.from("staff_advances").select("*").order("advance_date", { ascending: false }).limit(100).then((r) => r).catch(() => ({ data: null, error: { message: "unavailable" } }));
+    return { staff: staff ?? [], priv: priv ?? [], att: att ?? [], profiles: profiles ?? [], branding, leavesPending: leaves.length, rosterToday: roster.length, depts, leaveAll, rosterAll, payrollAll, advances: advRes.data ?? [], advMissing: !!advRes.error };
   }, []);
   const privMap = Object.fromEntries((data?.priv ?? []).map((p) => [p.staff_id, p]));
+  /* HR sections state + actions (Module 4). */
+  const staffNameById = new Map((data?.staff ?? []).map((x) => [x.id, x.full_name]));
+  const [rosterF, setRosterF] = useState({ staff_id: "", roster_date: todayStr(), shift: "Morning" });
+  const [leaveF, setLeaveF] = useState({ staff_id: "", leave_type: "Annual", start_date: todayStr(), end_date: todayStr(), reason: "" });
+  const [advF, setAdvF] = useState({ staff_id: "", amount: "", advance_date: todayStr(), note: "" });
+  async function addRoster() {
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!rosterF.staff_id) throw new Error("Select a staff member.");
+      await q(supabase.from("duty_roster").insert({ tenant_id: profile.tenant_id, staff_id: rosterF.staff_id, roster_date: rosterF.roster_date || todayStr(), notes: rosterF.shift }));
+      setMsg({ err: "", ok: `Roster added: ${staffNameById.get(rosterF.staff_id) ?? "Staff"} — ${rosterF.shift}, ${rosterF.roster_date}.` });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function delRoster(id) {
+    try { await q(supabase.from("duty_roster").delete().eq("id", id)); reload(); }
+    catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function addLeave() {
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!leaveF.staff_id) throw new Error("Select a staff member.");
+      if (!leaveF.start_date || !leaveF.end_date) throw new Error("Pick the leave dates.");
+      await q(supabase.from("leave_requests").insert({ tenant_id: profile.tenant_id, staff_id: leaveF.staff_id, leave_type: leaveF.leave_type.toLowerCase(), start_date: leaveF.start_date, end_date: leaveF.end_date, reason: leaveF.reason || null }));
+      setMsg({ err: "", ok: `Leave request added for ${staffNameById.get(leaveF.staff_id) ?? "Staff"} — pending review.` });
+      setLeaveF({ ...leaveF, reason: "" });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function reviewLeave(row, status) {
+    setMsg({ err: "", ok: "" });
+    try {
+      await q(supabase.from("leave_requests").update({ status, reviewed_by: profile.id, reviewed_at: new Date().toISOString() }).eq("id", row.id));
+      setMsg({ err: "", ok: `Leave ${status} for ${staffNameById.get(row.staff_id) ?? "Staff"}.` });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function addAdvance() {
+    setMsg({ err: "", ok: "" });
+    try {
+      if (!advF.staff_id) throw new Error("Select a staff member.");
+      if (!Number(advF.amount)) throw new Error("Enter the advance amount.");
+      await q(supabase.from("staff_advances").insert({ tenant_id: profile.tenant_id, staff_id: advF.staff_id, amount: Number(advF.amount), advance_date: advF.advance_date || todayStr(), note: advF.note || null }));
+      setMsg({ err: "", ok: `Advance of ${rs(Number(advF.amount))} recorded for ${staffNameById.get(advF.staff_id) ?? "Staff"}.` });
+      setAdvF({ staff_id: "", amount: "", advance_date: todayStr(), note: "" });
+      reload();
+    } catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function recoverAdvance(row) {
+    try { await q(supabase.from("staff_advances").update({ recovered: true, recovered_at: new Date().toISOString() }).eq("id", row.id)); reload(); }
+    catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
+  async function delAdvance(id) {
+    try { await q(supabase.from("staff_advances").delete().eq("id", id)); reload(); }
+    catch (e) { setMsg({ err: e.message, ok: "" }); }
+  }
   const avatarByProfile = new Map((data?.profiles ?? []).map((p) => [p.id, p.avatar_url]));
+  /* One attendance row per staff member per day is a DATABASE rule
+     (unique tenant+staff+date) — so marking twice in a day (Present
+     button, then a QR scan, or correcting Present to Absent) must
+     UPDATE today's row, not insert a second one. Upsert does that;
+     a plain insert crashed with the duplicate-key error. */
   async function markStaff(staffRow, status, method = "manual") {
     setMsg({ err: "", ok: "" });
     try {
-      await q(supabase.from("attendance").insert({
+      const row = await q(supabase.from("attendance").upsert({
         tenant_id: profile.tenant_id, staff_id: staffRow.id, attendance_date: todayStr(),
         check_in_at: status === "present" ? new Date().toISOString() : null, method, status,
-      }));
-      setMsg({ err: "", ok: `Attendance marked for ${staffRow.full_name} (${status}).` });
+      }, { onConflict: "tenant_id,staff_id,attendance_date" }).select().single());
+      const wasUpdate = row?.created_at && (Date.now() - new Date(row.created_at).getTime() > 10000);
+      setMsg({ err: "", ok: wasUpdate
+        ? `Attendance updated for ${staffRow.full_name} (${status}) — it was already marked for today.`
+        : `Attendance marked for ${staffRow.full_name} (${status}).` });
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
   }
@@ -1623,6 +2073,13 @@ export function HR({ profile, session }) {
     <div>
       <h2>HR — Staff & Attendance</h2>
       <Notice err={msg.err} ok={msg.ok} />
+      <StatCards items={[
+        { icon: "✅", label: "Present today", value: (data?.att ?? []).filter((a) => a.attendance_date === todayStr() && a.status === "present").length },
+        { icon: "🌙", label: "Absent today", value: (data?.att ?? []).filter((a) => a.attendance_date === todayStr() && a.status === "absent").length, tone: "amber" },
+        { icon: "⏰", label: "Late today", value: (data?.att ?? []).filter((a) => a.attendance_date === todayStr() && a.status === "present" && Number(a.late_minutes) > 0).length, tone: "blue" },
+        { icon: "📝", label: "Leave requests pending", value: data?.leavesPending ?? 0, tone: "violet" },
+        { icon: "🗓️", label: "On duty today (roster)", value: data?.rosterToday ?? 0 },
+      ]} />
       {profile.role === "clinic_admin" ? (
         <div className="card" style={{ marginBottom: 14 }}>
           <h3 style={{ marginTop: 0 }}>Hire staff — login, record and salary in one step</h3>
@@ -1746,16 +2203,214 @@ export function HR({ profile, session }) {
         </div>
       )}
       <div className="card"><h3>Recent attendance</h3><GenericTable rows={(data?.att ?? []).map((a) => ({ date: a.attendance_date, status: a.status, method: a.method, check_in: a.check_in_at ? String(a.check_in_at).slice(11, 16) : "" }))} /></div>
+      <div className="grid cols-2" style={{ marginTop: 14 }}>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Departments</h3>
+          <table>
+            <thead><tr><th>Department</th><th>Staff</th></tr></thead>
+            <tbody>
+              {(data?.depts ?? []).filter((d) => d.is_active !== false).map((d) => (
+                <tr key={d.id}><td>{d.name}</td><td>{(data?.staff ?? []).filter((x) => x.department_id === d.id).length}</td></tr>
+              ))}
+              {(data?.staff ?? []).some((x) => !x.department_id) && (
+                <tr><td className="muted">Not assigned</td><td>{(data?.staff ?? []).filter((x) => !x.department_id).length}</td></tr>
+              )}
+              {(data?.depts ?? []).length === 0 && <tr><td colSpan={2} className="muted">No departments yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <div className="card">
+          <h3 style={{ marginTop: 0 }}>Designations</h3>
+          <table>
+            <thead><tr><th>Designation</th><th>Staff</th></tr></thead>
+            <tbody>
+              {Object.entries((data?.staff ?? []).reduce((acc, x) => { const k = x.designation || String(x.role ?? "staff").replaceAll("_", " "); acc[k] = (acc[k] ?? 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1]).map(([k, n]) => (
+                <tr key={k}><td>{k}</td><td>{n}</td></tr>
+              ))}
+              {(data?.staff ?? []).length === 0 && <tr><td colSpan={2} className="muted">No staff yet.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Shifts — duty roster</h3>
+        <div className="grid cols-4">
+          <div><label>Staff member</label><select value={rosterF.staff_id} onChange={(e) => setRosterF({ ...rosterF, staff_id: e.target.value })}><option value="">— choose —</option>{(data?.staff ?? []).map((x) => <option key={x.id} value={x.id}>{x.full_name}</option>)}</select></div>
+          <div><label>Date</label><input type="date" value={rosterF.roster_date} onChange={(e) => setRosterF({ ...rosterF, roster_date: e.target.value })} /></div>
+          <div><label>Shift</label><select value={rosterF.shift} onChange={(e) => setRosterF({ ...rosterF, shift: e.target.value })}><option>Morning</option><option>Evening</option><option>Night</option></select></div>
+          <div style={{ alignSelf: "end" }}><button className="btn" onClick={addRoster}>Add to roster</button></div>
+        </div>
+        {(data?.rosterAll ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0, marginTop: 10 }}>No roster entries from yesterday onwards.</p> : (
+          <table style={{ marginTop: 10 }}>
+            <thead><tr><th>Date</th><th>Staff</th><th>Shift</th><th></th></tr></thead>
+            <tbody>
+              {(data?.rosterAll ?? []).map((r) => (
+                <tr key={r.id}><td>{r.roster_date}</td><td><b>{staffNameById.get(r.staff_id) ?? "—"}</b></td><td>{r.notes ?? "—"}</td>
+                  <td><button className="btn small ghost" onClick={() => delRoster(r.id)}>✕</button></td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Leaves</h3>
+        <div className="grid cols-4">
+          <div><label>Staff member</label><select value={leaveF.staff_id} onChange={(e) => setLeaveF({ ...leaveF, staff_id: e.target.value })}><option value="">— choose —</option>{(data?.staff ?? []).map((x) => <option key={x.id} value={x.id}>{x.full_name}</option>)}</select></div>
+          <div><label>Type</label><select value={leaveF.leave_type} onChange={(e) => setLeaveF({ ...leaveF, leave_type: e.target.value })}><option>Annual</option><option>Sick</option><option>Casual</option><option>Unpaid</option></select></div>
+          <div><label>From</label><input type="date" value={leaveF.start_date} onChange={(e) => setLeaveF({ ...leaveF, start_date: e.target.value })} /></div>
+          <div><label>To</label><input type="date" value={leaveF.end_date} onChange={(e) => setLeaveF({ ...leaveF, end_date: e.target.value })} /></div>
+          <div><label>Reason</label><input value={leaveF.reason} onChange={(e) => setLeaveF({ ...leaveF, reason: e.target.value })} /></div>
+          <div style={{ alignSelf: "end" }}><button className="btn" onClick={addLeave}>Add leave request</button></div>
+        </div>
+        {(data?.leaveAll ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0, marginTop: 10 }}>No leave requests yet.</p> : (
+          <table style={{ marginTop: 10 }}>
+            <thead><tr><th>Staff</th><th>Type</th><th>Dates</th><th>Reason</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {(data?.leaveAll ?? []).map((r) => (
+                <tr key={r.id}><td><b>{staffNameById.get(r.staff_id) ?? "—"}</b></td><td>{r.leave_type ?? "—"}</td>
+                  <td>{r.start_date} → {r.end_date}</td><td>{r.reason ?? "—"}</td>
+                  <td><span className={`pill ${r.status === "approved" ? "green" : r.status === "rejected" ? "red" : "amber"}`}>{r.status}</span></td>
+                  <td>{r.status === "pending" && <div className="row"><button className="btn small" onClick={() => reviewLeave(r, "approved")}>Approve</button><button className="btn small ghost" onClick={() => reviewLeave(r, "rejected")}>Reject</button></div>}</td></tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+      <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Payroll — overview</h3>
+        <table>
+          <thead><tr><th>Staff</th><th>Basic salary</th><th>Last slip</th></tr></thead>
+          <tbody>
+            {(data?.staff ?? []).map((x) => { const last = (data?.payrollAll ?? []).find((pr) => pr.staff_id === x.id); return (
+              <tr key={x.id}><td><b>{x.full_name}</b> <span className="muted">{String(x.role ?? "").replaceAll("_", " ")}</span></td>
+                <td>{privMap[x.id]?.basic_salary != null ? rs(privMap[x.id].basic_salary) : "—"}</td>
+                <td>{last ? <>{monthLabel(`${last.period_year}-${String(last.period_month ?? "").padStart(2, "0")}`)} · {payrollStatusLabel(last.status)} · net {rs(last.net_salary ?? 0)}</> : <span className="muted">no slips yet</span>}</td></tr> ); })}
+          </tbody>
+        </table>
+      </div>
+      <div className="card" style={{ marginTop: 14 }}>
+        <h3 style={{ marginTop: 0 }}>Salary advances</h3>
+        {data?.advMissing ? <p className="muted" style={{ marginBottom: 0 }}>Advances need the one-time database setup (the round-2 SQL file). Everything else on this page works without it.</p> : (
+          <>
+            <div className="grid cols-4">
+              <div><label>Staff member</label><select value={advF.staff_id} onChange={(e) => setAdvF({ ...advF, staff_id: e.target.value })}><option value="">— choose —</option>{(data?.staff ?? []).map((x) => <option key={x.id} value={x.id}>{x.full_name}</option>)}</select></div>
+              <div><label>Amount (Rs)</label><input type="number" value={advF.amount} onChange={(e) => setAdvF({ ...advF, amount: e.target.value })} /></div>
+              <div><label>Date</label><input type="date" value={advF.advance_date} onChange={(e) => setAdvF({ ...advF, advance_date: e.target.value })} /></div>
+              <div><label>Note</label><input value={advF.note} onChange={(e) => setAdvF({ ...advF, note: e.target.value })} /></div>
+              <div style={{ alignSelf: "end" }}><button className="btn" onClick={addAdvance}>Give advance</button></div>
+            </div>
+            <p className="muted">Outstanding (not yet recovered): <b>{rs((data?.advances ?? []).filter((a) => !a.recovered).reduce((s2, a) => s2 + (Number(a.amount) || 0), 0))}</b></p>
+            {(data?.advances ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No advances recorded yet.</p> : (
+              <table>
+                <thead><tr><th>Staff</th><th>Amount</th><th>Date</th><th>Note</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  {(data?.advances ?? []).map((a) => (
+                    <tr key={a.id}><td><b>{staffNameById.get(a.staff_id) ?? "—"}</b></td><td>{rs(a.amount ?? 0)}</td><td>{a.advance_date}</td><td>{a.note ?? "—"}</td>
+                      <td>{a.recovered ? <span className="pill green">recovered</span> : <span className="pill amber">outstanding</span>}</td>
+                      <td><div className="row">{!a.recovered && <button className="btn small" onClick={() => recoverAdvance(a)}>Mark recovered</button>}<button className="btn small ghost" onClick={() => delAdvance(a.id)}>✕</button></div></td></tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
 /* ---------------- Lab ---------------- */
+/* Derive a High/Low flag from a numeric result and a typed reference
+   range ("13.0 - 17.0", "Up to 200", "< 5", "> 40"). Returns "H",
+   "L" or null when it cannot be derived — then the lab's manual
+   abnormal tick is what the report shows. */
+export function labFlag(value, range) {
+  const v = parseFloat(String(value ?? "").replace(",", "."));
+  if (Number.isNaN(v) || !range) return null;
+  const r = String(range);
+  const two = r.match(/(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)/);
+  if (two) { const lo = parseFloat(two[1]), hi = parseFloat(two[2]); if (v < lo) return "L"; if (v > hi) return "H"; return null; }
+  const up = r.match(/(?:up to|<|\u2264)\s*(-?\d+(?:\.\d+)?)/i);
+  if (up) return v > parseFloat(up[1]) ? "H" : null;
+  const low = r.match(/(?:>|\u2265|above)\s*(-?\d+(?:\.\d+)?)/i);
+  if (low) return v < parseFloat(low[1]) ? "L" : null;
+  return null;
+}
+
+/* The A4 laboratory report — Pakistani lab format: clinic header with
+   logo, patient block (name, age/sex, MR, referred-by, sample and
+   report dates), a results table (result, unit, reference range,
+   H/L flag), remarks, and signature blocks for the technologist and
+   the pathologist. Printed through a popup window like the ID cards,
+   so the layout is a real document, not a receipt. */
+export function printLabReport({ brand, patient, order, result, doctorName }) {
+  const b = brand ?? {};
+  const clinic = b.clinic ?? {};
+  const flag = labFlag(result?.result_value, result?.reference_range);
+  const flagTxt = flag ?? (result?.is_abnormal ? "Abnormal" : "\u2014");
+  const flagStyle = flag || result?.is_abnormal ? ' style="color:#b91c1c;font-weight:800"' : "";
+  const dstr = (x) => (x ? String(x).slice(0, 10) : "\u2014");
+  const w = window.open("", "_blank", "width=840,height=1050");
+  if (!w) return;
+  w.document.write(`<html><head><title>Lab Report \u2014 ${escHtml(order?.test_name ?? "Test")}</title>
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; margin: 0; color: #111; }
+  .page { max-width: 760px; margin: 0 auto; padding: 28px 30px; }
+  .head { display: flex; gap: 14px; align-items: center; border-bottom: 3px solid #0f766e; padding-bottom: 12px; }
+  .head img { width: 64px; height: 64px; object-fit: contain; }
+  .cname { font-size: 24px; font-weight: 800; color: #0b3b4d; }
+  .csub { font-size: 12px; color: #555; margin-top: 2px; }
+  .title { text-align: center; font-size: 16px; font-weight: 800; letter-spacing: 3px; margin: 16px 0 10px; color: #0f766e; }
+  table { width: 100%; border-collapse: collapse; }
+  .pat td { padding: 5px 8px; font-size: 13.5px; border-bottom: 1px solid #e5e7eb; }
+  .pat td.k { color: #555; width: 110px; }
+  .pat td.v { font-weight: 700; }
+  .res { margin-top: 14px; }
+  .res th { background: #0f766e; color: #fff; text-align: left; padding: 8px; font-size: 13px; }
+  .res td { padding: 9px 8px; border-bottom: 1px solid #e5e7eb; font-size: 14px; }
+  .remarks { margin-top: 12px; font-size: 13px; }
+  .note { margin-top: 10px; font-size: 11.5px; color: #666; }
+  .sigs { display: flex; justify-content: space-between; margin-top: 90px; }
+  .sig { width: 220px; text-align: center; font-size: 12.5px; color: #333; }
+  .sig .line { border-top: 1.5px solid #333; margin-bottom: 6px; }
+  .foot { margin-top: 26px; border-top: 1px solid #e5e7eb; padding-top: 8px; font-size: 11px; color: #777; text-align: center; }
+</style></head><body><div class="page">
+  <div class="head">
+    ${clinic.logo ? `<img src="${clinic.logo}" alt=""/>` : ""}
+    <div>
+      <div class="cname">${escHtml(b.clinicName ?? "Clinic")}</div>
+      ${clinic.tagline ? `<div class="csub">${escHtml(clinic.tagline)}</div>` : ""}
+      ${clinic.address || b.tenant?.address ? `<div class="csub">${escHtml(clinic.address || b.tenant?.address)}</div>` : ""}
+      <div class="csub">${escHtml([clinic.phone || b.tenant?.phone, clinic.email || b.tenant?.email, clinic.website].filter(Boolean).join(" \u00b7 "))}</div>
+    </div>
+  </div>
+  <div class="title">LABORATORY REPORT</div>
+  <table class="pat">
+    <tr><td class="k">Patient Name</td><td class="v">${escHtml(patient?.full_name ?? "\u2014")}</td><td class="k">Age / Sex</td><td class="v">${escHtml([patient?.age_years != null ? patient.age_years + " yrs" : "", patient?.gender ?? ""].filter(Boolean).join(" / ") || "\u2014")}</td></tr>
+    <tr><td class="k">MR No</td><td class="v">${escHtml(patient?.mr_number ?? "\u2014")}</td><td class="k">Referred By</td><td class="v">${escHtml(doctorName ?? "\u2014")}</td></tr>
+    <tr><td class="k">Sample Date</td><td class="v">${dstr(order?.created_at)}</td><td class="k">Report Date</td><td class="v">${dstr(result?.reported_at ?? result?.created_at)}</td></tr>
+    <tr><td class="k">Report ID</td><td class="v">${escHtml(String(result?.id ?? "").slice(0, 8).toUpperCase() || "\u2014")}</td><td class="k">Lab No</td><td class="v">${escHtml(String(order?.id ?? "").slice(0, 8).toUpperCase() || "\u2014")}</td></tr>
+  </table>
+  <table class="res">
+    <tr><th style="width:34%">Test</th><th style="width:22%">Result</th><th style="width:12%">Unit</th><th style="width:20%">Reference Range</th><th style="width:12%">Flag</th></tr>
+    <tr><td><b>${escHtml(order?.test_name ?? "\u2014")}</b></td><td><b>${escHtml(result?.result_value ?? "\u2014")}</b></td><td>${escHtml(result?.unit ?? "\u2014")}</td><td>${escHtml(result?.reference_range ?? "\u2014")}</td><td${flagStyle}>${escHtml(flagTxt)}</td></tr>
+  </table>
+  ${result?.remarks ? `<div class="remarks"><b>Remarks:</b> ${escHtml(result.remarks)}</div>` : ""}
+  <div class="note">Results should be correlated clinically. Please consult your physician for interpretation.</div>
+  <div class="sigs">
+    <div class="sig"><div class="line"></div>Lab Technologist</div>
+    <div class="sig"><div class="line"></div>Pathologist / Consultant</div>
+  </div>
+  <div class="foot">${escHtml(clinic.end_note ?? "")} Computer-generated report \u00b7 MediCore</div>
+</div><script>window.onload=function(){setTimeout(function(){window.print()},250)}<\/script></body></html>`);
+  w.document.close();
+}
+
 export function Lab({ profile }) {
-  const { printReceipt } = usePrint() ?? {};
+  const { printReceipt, brand } = usePrint() ?? {};
   const [msg, setMsg] = useState({ err: "", ok: "" });
   const [resultFor, setResultFor] = useState(null);
-  const [rf, setRf] = useState({ value: "", abnormal: false });
+  const [rf, setRf] = useState({ value: "", unit: "", range: "", remarks: "", abnormal: false });
   const [busy, setBusy] = useState(false);
   const canAct = ["lab_operator", "clinic_admin"].includes(profile?.role);
   const { data, err, reload } = useLoad(async () => {
@@ -1764,13 +2419,25 @@ export function Lab({ profile }) {
       profile?.tenant_id
         ? q(supabase.from("settings").select("value").eq("tenant_id", profile.tenant_id).eq("key", "lab_prices").maybeSingle())
         : Promise.resolve(null),
-      q(supabase.from("patients").select("id,full_name,mr_number")),
+      q(supabase.from("patients").select("id,full_name,mr_number,age_years,gender")),
       q(supabase.from("lab_results").select("*").order("created_at", { ascending: false }).limit(300)),
     ]);
-    return { orders: orders ?? [], labPrices: lp?.value ?? null, patients: patients ?? [], results: results ?? [] };
+    /* Report extras — tolerant reads (see CareQueue): staff names for
+       "Referred by", and the lab invoices (trigger-created) so the
+       payment slip can show fee / paid / balance. */
+    const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
+    const [dir, labInv] = await Promise.all([
+      tol(supabase.from("staff_directory").select("id,full_name")),
+      tol(supabase.from("invoices").select("id,invoice_number,total_amount,amount_paid,status").eq("invoice_type", "lab").order("created_at", { ascending: false }).limit(200)),
+    ]);
+    return { orders: orders ?? [], labPrices: lp?.value ?? null, patients: patients ?? [], results: results ?? [], dir, labInv };
   }, []);
   const rows = data?.orders ?? [];
   const patById = new Map((data?.patients ?? []).map((x) => [x.id, x]));
+  const staffById = new Map((data?.dir ?? []).map((x) => [x.id, x]));
+  /* A lab invoice's number embeds its order id without dashes — the
+     same convention the OPD trigger uses for tokens. */
+  const invForOrder = (o) => (data?.labInv ?? []).find((i) => String(i.invoice_number ?? "").includes(String(o.id).replaceAll("-", ""))) ?? null;
   const resultByOrder = new Map();
   (data?.results ?? []).forEach((r) => { if (!resultByOrder.has(r.lab_order_id)) resultByOrder.set(r.lab_order_id, r); });
   /* The lab workflow: a doctor's order arrives as pending; the lab
@@ -1783,15 +2450,26 @@ export function Lab({ profile }) {
     try {
       if (!rf.value.trim()) throw new Error("Enter the result value.");
       setBusy(true);
-      await q(supabase.from("lab_results").insert({
+      const flag = labFlag(rf.value, rf.range);
+      const base = {
         tenant_id: profile.tenant_id, lab_order_id: resultFor.id, patient_id: resultFor.patient_id,
-        result_value: rf.value.trim(), is_abnormal: rf.abnormal,
+        result_value: rf.value.trim(), is_abnormal: flag ? true : rf.abnormal,
         reported_by: profile.id, reported_at: new Date().toISOString(),
-      }));
+      };
+      /* Unit / range / remarks live in columns added by the round-2
+         SQL. If that setup has not been run yet, save the result
+         without them instead of failing the whole workflow. */
+      let dropped = false;
+      try {
+        await q(supabase.from("lab_results").insert({ ...base, unit: rf.unit.trim() || null, reference_range: rf.range.trim() || null, remarks: rf.remarks.trim() || null }));
+      } catch (e) {
+        if (/unit|reference_range|remarks|column/i.test(e.message)) { await q(supabase.from("lab_results").insert(base)); dropped = true; }
+        else throw e;
+      }
       await q(supabase.from("lab_orders").update({ status: "completed" }).eq("id", resultFor.id));
-      setMsg({ err: "", ok: `Result saved for ${resultFor.test_name} — the report is ready to print.` });
+      setMsg({ err: "", ok: `Result saved for ${resultFor.test_name} — the report is ready to print.${flag ? ` Flag: ${flag === "H" ? "High" : "Low"} (from the reference range).` : ""}${dropped ? " Note: unit / range / remarks need the one-time setup (SQL) to be stored." : ""}` });
       setResultFor(null);
-      setRf({ value: "", abnormal: false });
+      setRf({ value: "", unit: "", range: "", remarks: "", abnormal: false });
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
     setBusy(false);
@@ -1811,7 +2489,7 @@ export function Lab({ profile }) {
         { icon: "🧪", label: "Orders today", value: rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).length },
         { icon: "⏳", label: "Pending", value: rows.filter((r) => r.status === "pending").length, tone: "amber" },
         { icon: "✅", label: "Done / reported", value: rows.filter((r) => r.status !== "pending").length, tone: "blue" },
-        { icon: "💰", label: "Lab fees today", value: rs(rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).reduce((a, r) => a + (Number(r.fee_pkr) || 0), 0)), tone: "violet" },
+        { icon: "💰", label: "Lab income today", value: rs(rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).reduce((a, r) => a + (Number(r.fee_pkr) || 0), 0)), tone: "violet" },
       ]} />
       <div className="card">
         {rows.length === 0 ? <p className="muted">No lab orders yet. Doctors order tests from the consultation panel.</p> : (
@@ -1826,21 +2504,10 @@ export function Lab({ profile }) {
                     <td>{r.test_name}</td>
                     <td>{rs(r.fee_pkr ?? 0)}</td>
                     <td><span className={`pill ${r.status === "completed" ? "green" : "amber"}`}>{r.status}</span></td>
-                    <td>{res ? <>{res.result_value} {res.is_abnormal && <span className="pill red">abnormal</span>}</> : <span className="muted">—</span>}</td>
+                    <td>{res ? <>{res.result_value}{res.unit ? " " + res.unit : ""} {(() => { const fl = labFlag(res.result_value, res.reference_range); return fl ? <span className="pill red">{fl === "H" ? "High" : "Low"}</span> : res.is_abnormal ? <span className="pill red">abnormal</span> : null; })()}</> : <span className="muted">—</span>}</td>
                     <td><div className="row">
-                      {r.status !== "completed" && canAct && <button className="btn small" onClick={() => { setResultFor(r); setRf({ value: "", abnormal: false }); }}>Enter result</button>}
-                      {r.status === "completed" && res && <button className="btn small ghost" onClick={() => printReceipt?.({
-                        paper: "A4", title: "Lab Report",
-                        lines: [
-                          { k: "Patient", v: pt?.full_name ?? "—" },
-                          { k: "MR #", v: pt?.mr_number ?? "—" },
-                          { k: "Test", v: r.test_name },
-                          { k: "Result", v: res.result_value },
-                          ...(res.is_abnormal ? [{ k: "Flag", v: "ABNORMAL" }] : []),
-                          { k: "Fee", v: rs(r.fee_pkr ?? 0) },
-                          { k: "Reported", v: String(res.reported_at ?? res.created_at ?? "").slice(0, 10) },
-                        ],
-                      })}>Print report</button>}
+                      {r.status !== "completed" && canAct && <button className="btn small" onClick={() => { setResultFor(r); setRf({ value: "", unit: "", range: "", remarks: "", abnormal: false }); }}>Enter result</button>}
+                      {r.status === "completed" && res && <button className="btn small ghost" onClick={() => printLabReport({ brand, patient: pt, order: r, result: res, doctorName: staffById.get(r.ordered_by)?.full_name })}>Print report</button>}
                       {r.status !== "completed" && <button className="btn small ghost" onClick={() => printReceipt?.({
                         title: "Lab Order",
                         lines: [
@@ -1850,6 +2517,19 @@ export function Lab({ profile }) {
                           { k: "Date", v: String(r.created_at ?? "").slice(0, 10) },
                         ],
                       })}>Print order</button>}
+                      <button className="btn small ghost" onClick={() => { const inv = invForOrder(r); const fee = Number(r.fee_pkr) || 0; const paidAmt = Number(inv?.amount_paid) || 0; printReceipt?.({
+                        title: "Lab Payment Slip",
+                        lines: [
+                          { k: "Patient", v: pt?.full_name ?? "—" },
+                          { k: "MR #", v: pt?.mr_number ?? "—" },
+                          { k: "Test", v: r.test_name },
+                          { k: "Fee", v: rs(fee) },
+                          { k: "Paid", v: rs(paidAmt) },
+                          { k: "Balance", v: rs(Math.max(0, fee - paidAmt)) },
+                          ...(inv ? [{ k: "Invoice", v: shortInvoice(inv) }] : []),
+                          { k: "Date", v: todayStr() },
+                        ],
+                      }); }}>Payment slip</button>
                     </div></td>
                   </tr> ); })}
               </tbody>
@@ -1862,7 +2542,13 @@ export function Lab({ profile }) {
           <div className="modal-card" style={{ width: 480 }} onClick={(e) => e.stopPropagation()}>
             <h3 style={{ marginTop: 0 }}>Enter result — {resultFor.test_name}</h3>
             <p className="muted" style={{ marginTop: 0 }}>{patById.get(resultFor.patient_id)?.full_name ?? ""}</p>
-            <div><label>Result value *</label><textarea rows={3} value={rf.value} onChange={(e) => setRf({ ...rf, value: e.target.value })} placeholder="e.g. Hemoglobin 13.5 g/dL" /></div>
+            <div><label>Result value *</label><textarea rows={3} value={rf.value} onChange={(e) => setRf({ ...rf, value: e.target.value })} placeholder="e.g. 13.5 — or a short text result" /></div>
+            <div className="grid cols-2" style={{ marginTop: 10 }}>
+              <div><label>Unit</label><input value={rf.unit} onChange={(e) => setRf({ ...rf, unit: e.target.value })} placeholder="e.g. g/dL, mg/dL, IU/L" /></div>
+              <div><label>Reference range</label><input value={rf.range} onChange={(e) => setRf({ ...rf, range: e.target.value })} placeholder="e.g. 13.0 - 17.0" /></div>
+            </div>
+            <div style={{ marginTop: 10 }}><label>Remarks</label><input value={rf.remarks} onChange={(e) => setRf({ ...rf, remarks: e.target.value })} placeholder="Optional — printed on the report" /></div>
+            <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>If the result is a number and the range looks like 13.0 - 17.0, the report flags it <b>High / Low</b> automatically.</p>
             <label className="row" style={{ gap: 8, marginTop: 10, alignItems: "center", cursor: "pointer" }}><input type="checkbox" checked={rf.abnormal} onChange={(e) => setRf({ ...rf, abnormal: e.target.checked })} style={{ width: 18, height: 18 }} /> Mark as abnormal</label>
             <div className="row" style={{ marginTop: 14 }}>
               <button className="btn" disabled={busy} onClick={saveResult}>{busy ? "Saving…" : "Save result & complete"}</button>
