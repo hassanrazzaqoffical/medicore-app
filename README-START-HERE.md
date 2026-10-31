@@ -28,7 +28,3 @@ wahi logins chalenge; bas internet chahiye.
 - apps-script/Code.gs — Google Sheets sync script
 Ye sab live system par pehle se laga hua hai; ye files sirf
 backup aur dobara setup ke liye hain.
-
-
-
-
