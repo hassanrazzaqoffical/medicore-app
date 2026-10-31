@@ -355,6 +355,10 @@ export function Tokens({ profile, tvMode = false }) {
   /* One-step Patient + Token: mode 'new' shows a small patient form inside
      the issue card; one click creates the patient and issues the token. */
   const [mode, setMode] = useState("new");
+  /* Visit type decides the fee: a returning (existing) patient on a
+     follow-up visit pays the follow-up fee from Fees & Prices, not
+     the full OPD fee. The choice is manual — the operator picks it. */
+  const [visitType, setVisitType] = useState("new");
   const [np, setNp] = useState({ full_name: "", phone: "", age_years: "", gender: "male" });
   const [dupList, setDupList] = useState(null);
   /* Phase 2A: the optional specialty for the chosen department. It comes
@@ -385,6 +389,7 @@ export function Tokens({ profile, tvMode = false }) {
     return {
       tokens: tokens ?? [], patients: patients ?? [], depts: depts ?? [], doctors: doctors ?? [], staffDocs: staffDocs ?? [],
       fee: settings?.value?.opd_fee ?? 800,
+      followFee: settings?.value?.follow_up_fee ?? 400,
       specCat: specCatRow?.value ?? {}, docAssign: docAssignRow?.value ?? {},
     };
   }, [tid]);
@@ -399,12 +404,13 @@ export function Tokens({ profile, tvMode = false }) {
 
   /* One receipt doc for a token — used by the auto-print, the preview
      popup and the manual Print buttons, so all three always match. */
-  const tokenDoc = (tok, inv, spec) => ({
+  const tokenDoc = (tok, inv, spec, visitLabel) => ({
     title: "OPD Token", big: "#" + tok.token_number,
     lines: [
       { k: "Patient", v: pName(tok.patient_id) },
       { k: "Department", v: dName(tok.department_id) },
       { k: "Doctor", v: docName(tok.doctor_id) },
+      ...(visitLabel ? [{ k: "Visit", v: visitLabel }] : []),
       ...(spec ? [{ k: "Specialty", v: spec }] : []),
       { k: "Fee", v: rs(tok.fee_pkr) },
       ...(inv ? [{ k: "Invoice", v: inv.invoice_number }] : []),
@@ -421,7 +427,7 @@ export function Tokens({ profile, tvMode = false }) {
     try {
       if (!patientId) throw new Error("Select a patient.");
       if (!form.department_id) throw new Error("Select a department.");
-      const fee = Number(data.fee ?? 0);
+      const fee = visitType === "followup" ? Number(data.followFee ?? 400) : Number(data.fee ?? 0);
       /* The dropdown selection is a user_profiles id (Phase 2A assignments
          are keyed by profile id), but tokens.doctor_id references STAFF —
          sending the profile id fails with a 409 FK violation. Map
@@ -455,8 +461,8 @@ export function Tokens({ profile, tvMode = false }) {
           .order("created_at", { ascending: false }).limit(1);
         inv = invs?.[0] ?? null;
       }
-      setLastIssued({ token, inv, specialty: specialty || null });
-      const doc = tokenDoc(token, inv, specialty || null);
+      setLastIssued({ token, inv, specialty: specialty || null, visit: visitType });
+      const doc = tokenDoc(token, inv, specialty || null, visitType === "followup" ? "Follow-up" : null);
       setSlip(doc);
       printReceipt?.(doc);
       setMsg({ err: "", ok: fee > 0
@@ -596,7 +602,7 @@ export function Tokens({ profile, tvMode = false }) {
       {docSkipNote && <div className="notice" style={{ border: "1px solid #f59e0b", background: "#fffbeb", borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 13 }}>{docSkipNote}</div>}
       {!tvMode && (
         <div className="card" style={{ marginBottom: 14 }}>
-          <h3>Issue token — fee {data ? rs(data.fee) : ""}</h3>
+          <h3>Issue token — fee {data ? rs(visitType === "followup" ? (data.followFee ?? 400) : (data.fee ?? 800)) : ""}</h3>
           <div className="row" style={{ marginBottom: 12 }}>
             <button className={`btn small ${mode === "new" ? "" : "ghost"}`} onClick={() => { setMode("new"); setDupList(null); }}>New patient — one step</button>
             <button className={`btn small ${mode === "existing" ? "" : "ghost"}`} onClick={() => { setMode("existing"); setDupList(null); }}>Existing patient</button>
@@ -616,6 +622,11 @@ export function Tokens({ profile, tvMode = false }) {
             </div>
           )}
           <div className="grid cols-3">
+            <div><label>Visit type</label>
+              <select value={visitType} onChange={(e) => setVisitType(e.target.value)}>
+                <option value="new">New visit — {rs(data?.fee ?? 800)}</option>
+                <option value="followup">Follow-up — {rs(data?.followFee ?? 400)}</option>
+              </select></div>
             <div><label>Department</label>
               <select value={form.department_id} onChange={onDeptChange}>
                 <option value="">— choose —</option>
@@ -626,7 +637,7 @@ export function Tokens({ profile, tvMode = false }) {
                 <option value="">— any —</option>
                 {doctorOptions.map((d) => <option key={d.id} value={d.id}>{d.full_name}</option>)}
               </select>
-              {assignedDocIds.length > 0 && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Sirf is department ke assigned doctors (Settings → Doctor assignments).</div>}</div>
+              {assignedDocIds.length > 0 && <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Only doctors assigned to this department (Settings → Doctor assignments).</div>}</div>
             <div><label>Specialty (optional)</label>
               <select value={specialty} onChange={(e) => setSpecialty(e.target.value)} disabled={!form.department_id || deptSpecs.length === 0}>
                 <option value="">— any —</option>
@@ -660,7 +671,7 @@ export function Tokens({ profile, tvMode = false }) {
       {lastIssued && !tvMode && (
         <div className="card" style={{ marginBottom: 14 }}>
           <div className="row">
-            <span>Just issued: <b>Token #{lastIssued.token.token_number}</b> — {pName(lastIssued.token.patient_id)} · Fee {rs(lastIssued.token.fee_pkr)}
+            <span>Just issued: <b>Token #{lastIssued.token.token_number}</b> — {pName(lastIssued.token.patient_id)} · Fee {rs(lastIssued.token.fee_pkr)}{lastIssued.visit === "followup" ? <> · <b>Follow-up</b></> : null}
               {lastIssued.specialty ? <> · Specialty <b>{lastIssued.specialty}</b></> : null}
               {lastIssued.inv ? <> · Invoice <b>{lastIssued.inv.invoice_number}</b></> : null}</span>
             <div className="spacer" />
