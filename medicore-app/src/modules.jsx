@@ -352,7 +352,7 @@ export function Tokens({ profile, tvMode = false }) {
   const [form, setForm] = useState({ patient_id: "", department_id: "", doctor_id: "" });
   /* One-step Patient + Token: mode 'new' shows a small patient form inside
      the issue card; one click creates the patient and issues the token. */
-  const [mode, setMode] = useState("existing");
+  const [mode, setMode] = useState("new");
   const [np, setNp] = useState({ full_name: "", phone: "", age_years: "", gender: "male" });
   const [dupList, setDupList] = useState(null);
   /* Phase 2A: the optional specialty for the chosen department. It comes
@@ -596,8 +596,8 @@ export function Tokens({ profile, tvMode = false }) {
         <div className="card" style={{ marginBottom: 14 }}>
           <h3>Issue token — fee {data ? rs(data.fee) : ""}</h3>
           <div className="row" style={{ marginBottom: 12 }}>
-            <button className={`btn small ${mode === "existing" ? "" : "ghost"}`} onClick={() => { setMode("existing"); setDupList(null); }}>Existing patient</button>
             <button className={`btn small ${mode === "new" ? "" : "ghost"}`} onClick={() => { setMode("new"); setDupList(null); }}>New patient — one step</button>
+            <button className={`btn small ${mode === "existing" ? "" : "ghost"}`} onClick={() => { setMode("existing"); setDupList(null); }}>Existing patient</button>
           </div>
           {mode === "existing" ? (
             <div style={{ marginBottom: 10 }}><label>Patient</label>

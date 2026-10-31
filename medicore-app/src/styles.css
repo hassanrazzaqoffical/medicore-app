@@ -358,3 +358,111 @@ button:focus-visible, .navitem:focus-visible, a:focus-visible { outline: 2px sol
   .grid.cols-4 { grid-template-columns: 1fr 1fr; }
   .grid.cols-3 { grid-template-columns: 1fr 1fr; }
 }
+
+/* ============================ THEME v4 ============================
+   UI/UX Pro Max design system applied (2026-10-31): Plus Jakarta
+   Sans typography, glassmorphism depth, dashboard density (8/10),
+   soft staggered motion, WCAG-minded contrast. MediCore's teal
+   brand identity is kept. Print/receipt rules above stay untouched,
+   so slips remain pixel-identical. */
+
+:root {
+  --font: "Plus Jakarta Sans", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  --btn-a: #0f766e;
+  --btn-b: #115e59;
+}
+
+body { font-family: var(--font); }
+button, input, select, textarea { font-family: inherit; }
+::selection { background: rgba(13, 148, 136, .28); }
+
+h2 { font-weight: 800; letter-spacing: -.015em; }
+h3 { font-weight: 700; letter-spacing: -.01em; }
+button, .btn, .navitem, select { cursor: pointer; }
+
+/* Focus visibility for keyboard users (skill checklist) */
+:focus-visible { outline: 3px solid rgba(13, 148, 136, .55); outline-offset: 2px; border-radius: 6px; }
+
+/* Sidebar — deep-sea glass with a soft top sheen */
+.sidebar {
+  background:
+    radial-gradient(420px 200px at 20% -40px, rgba(45, 212, 191, .22), transparent 65%),
+    linear-gradient(180deg, #083344 0%, #072a38 45%, #06222e 100%);
+}
+.navitem { backdrop-filter: blur(2px); }
+.navitem:hover { background: rgba(255, 255, 255, .09); }
+.navitem.active {
+  background: linear-gradient(135deg, var(--btn-a), var(--btn-b));
+  box-shadow: 0 8px 22px rgba(13, 148, 136, .40), inset 0 1px 0 rgba(255, 255, 255, .28);
+}
+
+/* Cards — bright glass-lite surface, deeper layered shadow */
+.card {
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdfd 100%);
+  border: 1px solid rgba(7, 60, 52, .09);
+  box-shadow: 0 1px 2px rgba(8, 34, 46, .05), 0 10px 30px rgba(8, 34, 46, .07);
+  animation: v4-rise .38s cubic-bezier(.2, .8, .25, 1) both;
+}
+.main > div > .card:nth-child(2) { animation-delay: .03s; }
+.main > div > .card:nth-child(3) { animation-delay: .06s; }
+
+/* Buttons — compliant teal gradient (white text >= 4.9:1 both ends) */
+.btn {
+  background: linear-gradient(135deg, var(--btn-a), var(--btn-b));
+  box-shadow: 0 4px 14px rgba(15, 118, 110, .30), inset 0 1px 0 rgba(255, 255, 255, .22);
+  transition: transform .16s ease, box-shadow .16s ease, filter .16s ease, background .16s ease;
+}
+.btn:hover { background: linear-gradient(135deg, var(--btn-a), var(--btn-b)); filter: brightness(1.07); }
+.btn.ghost {
+  background: rgba(255, 255, 255, .85); backdrop-filter: blur(4px);
+  border: 1px solid rgba(7, 60, 52, .16); box-shadow: 0 1px 3px rgba(8, 34, 46, .06);
+}
+.btn.ghost:hover { background: #eefaf7; filter: none; }
+
+/* Inputs — soft tinted fill, bright on focus */
+input, select, textarea {
+  background: #fbfefe; border-color: rgba(7, 60, 52, .16); border-radius: 10px;
+  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+}
+input:focus, select:focus, textarea:focus { background: #ffffff; }
+
+/* Stat cards — gradient icon tiles, bolder numbers, gentle lift */
+.stat { animation: v4-rise .38s cubic-bezier(.2, .8, .25, 1) both; transition: transform .18s ease, box-shadow .18s ease; }
+.grid.cols-4 > .stat:nth-child(2) { animation-delay: .05s; }
+.grid.cols-4 > .stat:nth-child(3) { animation-delay: .10s; }
+.grid.cols-4 > .stat:nth-child(4) { animation-delay: .15s; }
+.stat:hover { transform: translateY(-2px); box-shadow: 0 4px 8px rgba(8, 34, 46, .06), 0 16px 34px rgba(8, 34, 46, .10); }
+.stat .vl { font-weight: 800; letter-spacing: -.02em; }
+.stat .ic { background: linear-gradient(135deg, #ccfbf1, #99f6e4); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8), 0 3px 8px rgba(13, 148, 136, .18); }
+.stat .ic.blue { background: linear-gradient(135deg, #dbeafe, #bfdbfe); }
+.stat .ic.violet { background: linear-gradient(135deg, #ede9fe, #ddd6fe); }
+.stat .ic.amber { background: linear-gradient(135deg, #fef3c7, #fde68a); }
+
+/* Tables — tinted sticky-feel header, calmer row lines */
+th { background: linear-gradient(180deg, #f0faf8, #e6f4f1); }
+tbody tr { transition: background .14s ease; }
+tbody tr:hover { background: #f3faf9; }
+
+/* Login — true frosted glass card over the living gradient */
+.logincard { background: rgba(255, 255, 255, .93); backdrop-filter: blur(14px); border: 1px solid rgba(255, 255, 255, .65); }
+
+/* Scrollbars — slim, brand-tinted */
+* { scrollbar-width: thin; scrollbar-color: rgba(13, 148, 136, .45) transparent; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-thumb { background: rgba(13, 148, 136, .40); border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+*::-webkit-scrollbar-track { background: transparent; }
+
+/* TV board picks up the new font automatically via body; hero weight */
+.tv2 .now-big { font-weight: 800; letter-spacing: -.01em; }
+
+@keyframes v4-rise { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+
+/* Small screens: stat cards stay 2x2 instead of one tall column */
+@media (max-width: 900px) {
+  .grid.cols-4 { grid-template-columns: 1fr 1fr; }
+}
+
+/* Respect users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
