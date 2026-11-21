@@ -462,9 +462,9 @@ export default function App() {
         {nav.map((n) => (
           <button key={n.key} className={`navitem ${activePage === n.key ? "active" : ""}`} onClick={() => setPage(n.key)}>{n.icon ? <span className="nic"><AppIcon icon={n.icon} size={18} /></span> : null}{n.label}</button>
         ))}
-        <div className="sideuser" style={{ marginTop: 18, padding: "10px", borderTop: "1px solid #164e5e" }}>
+        <div className="sideuser" style={{ marginTop: 18, padding: "10px", borderTop: "1px solid rgba(8,145,178,.18)" }}>
           {profile?.avatar_url ? <img src={profile.avatar_url} alt="" style={{ width: 46, height: 46, borderRadius: "50%", objectFit: "cover", marginBottom: 6 }} /> : null}
-          <div style={{ fontWeight: 700, color: "#fff" }}>{profile?.full_name ?? "…"}</div>
+          <div style={{ fontWeight: 700 }}>{profile?.full_name ?? "…"}</div>
           <div style={{ fontSize: 12 }} className="muted">{profile?.email ?? ""}</div>
           <div style={{ fontSize: 12 }}>{profile?.role ?? ""}</div>
           {profile && profile.role !== "super_admin" && <NotificationsBell profile={profile} />}

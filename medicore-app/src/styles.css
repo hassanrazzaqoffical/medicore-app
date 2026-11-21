@@ -467,6 +467,164 @@ tbody tr:hover { background: #f3faf9; }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
+/* ============================ THEME v5 ============================
+   Complete visual upgrade (2026-11-21): a fresh "aurora clinical"
+   look — light sidebar, cyan→emerald primary gradient, airier
+   surfaces and softer depth. Pure presentation layer: no layout
+   geometry, no receipt rules and no @media print changes, so
+   printed slips stay pixel-identical and every workflow is
+   untouched. Palette follows the UI/UX Pro Max healthcare system
+   (calm cyan + health green); white text on both gradient stops
+   passes WCAG AA (#0e7490 ≈ 5.0:1, #0f766e ≈ 5.5:1). */
+
+:root {
+  --teal: #0891b2;
+  --teal-2: #06b6d4;
+  --teal-dark: #0e7490;
+  --ink: #10222e;
+  --muted: #5c7282;
+  --line: #dcebee;
+  --bg: #eef6f7;
+  --accent: #059669;
+  --btn-a: #0e7490;
+  --btn-b: #0f766e;
+  --ring: 0 0 0 3px rgba(8, 145, 178, .25);
+  --shadow-sm: 0 1px 2px rgba(8, 47, 73, .05), 0 2px 10px rgba(8, 47, 73, .05);
+  --shadow-md: 0 8px 26px rgba(8, 47, 73, .10), 0 2px 8px rgba(8, 47, 73, .05);
+  --shadow-lg: 0 22px 50px rgba(8, 47, 73, .18);
+}
+
+body {
+  background:
+    radial-gradient(1100px 520px at 88% -10%, rgba(6, 182, 212, .12), transparent 60%),
+    radial-gradient(900px 500px at -12% 108%, rgba(5, 150, 105, .08), transparent 55%),
+    var(--bg);
+}
+::selection { background: rgba(8, 145, 178, .28); }
+a { color: var(--teal-dark); }
+label { color: #48626f; }
+
+/* ---- Sidebar: LIGHT — white glass rail, ink text, gradient active pill ---- */
+.sidebar {
+  background: linear-gradient(180deg, rgba(255, 255, 255, .96), rgba(244, 250, 251, .94));
+  color: var(--ink);
+  border-right: 1px solid var(--line);
+  box-shadow: 10px 0 30px rgba(8, 47, 73, .06);
+  backdrop-filter: blur(10px);
+  scrollbar-color: rgba(8, 145, 178, .4) transparent;
+}
+.sidebar::-webkit-scrollbar-thumb { background: rgba(8, 145, 178, .35); }
+.sidebar .brand { color: var(--ink); }
+.sidebar .brand small { color: var(--teal-dark); letter-spacing: .14em; }
+.brandmark {
+  background: linear-gradient(135deg, var(--btn-a), var(--btn-b));
+  box-shadow: 0 5px 14px rgba(8, 145, 178, .35);
+  border-radius: 10px;
+}
+.navsec { color: #7d99a6; }
+.navitem { color: #3d5a68; backdrop-filter: none; border-radius: 12px; }
+.navitem:hover { background: rgba(8, 145, 178, .09); color: var(--ink); transform: translateX(2px); }
+.navitem.active {
+  background: linear-gradient(135deg, var(--btn-a), var(--btn-b));
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(8, 145, 178, .32), inset 0 1px 0 rgba(255, 255, 255, .25);
+}
+.sideuser {
+  background: rgba(8, 145, 178, .06);
+  border: 1px solid rgba(8, 145, 178, .14);
+  border-radius: 14px;
+  color: var(--ink);
+}
+
+/* ---- Buttons: cyan→emerald sheen ---- */
+.btn {
+  background: linear-gradient(135deg, var(--btn-a), var(--btn-b));
+  border-radius: 12px;
+  box-shadow: 0 5px 16px rgba(8, 145, 178, .30), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+.btn:hover { background: linear-gradient(135deg, var(--btn-a), var(--btn-b)); filter: brightness(1.07); transform: translateY(-1px); box-shadow: 0 9px 22px rgba(8, 145, 178, .34), inset 0 1px 0 rgba(255, 255, 255, .22); }
+.btn:active { transform: translateY(0); }
+.btn.ghost { background: rgba(255, 255, 255, .9); border: 1px solid var(--line); color: var(--ink); box-shadow: var(--shadow-sm); }
+.btn.ghost:hover { background: #effafa; border-color: #bfe0e8; filter: none; }
+.btn.danger { background: linear-gradient(135deg, #ef4444, #dc2626 60%, #b91c1c); box-shadow: 0 5px 16px rgba(220, 38, 38, .26), inset 0 1px 0 rgba(255, 255, 255, .22); }
+.btn.danger:hover { background: linear-gradient(135deg, #ef4444, #dc2626 60%, #b91c1c); filter: brightness(1.05); }
+.btn.small { border-radius: 9px; }
+
+/* ---- Inputs: crisp white, cyan focus ---- */
+input, select, textarea {
+  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+}
+input:hover, select:hover, textarea:hover { border-color: #bcd9df; }
+input:focus, select:focus, textarea:focus { border-color: var(--teal); box-shadow: var(--ring); background: #fff; }
+input:disabled, select:disabled { background: #f1f7f8; }
+
+/* ---- Cards & stats: brighter surface, floatier depth ---- */
+.card {
+  background: linear-gradient(180deg, #ffffff 0%, #fcfefe 100%);
+  border: 1px solid rgba(8, 47, 73, .08);
+  border-radius: 18px;
+  box-shadow: var(--shadow-sm);
+}
+.card:hover { box-shadow: var(--shadow-md); }
+.stat { border-radius: 18px; border-color: rgba(8, 47, 73, .08); box-shadow: var(--shadow-sm); }
+.stat:hover { box-shadow: var(--shadow-md); }
+.stat .ic { background: linear-gradient(135deg, #cffafe, #a5f3fc); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .85), 0 4px 10px rgba(8, 145, 178, .20); border-radius: 14px; }
+.stat .ic.blue { background: linear-gradient(135deg, #dbeafe, #bfdbfe); }
+.stat .ic.violet { background: linear-gradient(135deg, #ede9fe, #ddd6fe); }
+.stat .ic.amber { background: linear-gradient(135deg, #fef3c7, #fde68a); }
+.plan-card { border-radius: 18px; border-top: 4px solid var(--teal); box-shadow: var(--shadow-sm); }
+.plan-card:hover { box-shadow: var(--shadow-md); }
+.bar > i { background: linear-gradient(90deg, var(--teal), var(--accent)); }
+
+/* ---- Tables: pale cyan header, calmer rows ---- */
+th { background: linear-gradient(180deg, #f2fbfd, #e7f5f8); color: #40606e; }
+tbody tr:hover { background: #effafa; }
+tbody tr:nth-child(even) { background: #fbfdfd; }
+tbody tr:nth-child(even):hover { background: #effafa; }
+
+/* ---- Pills & chips ---- */
+.pill { border: 1px solid rgba(8, 47, 73, .07); }
+.pill.green { background: #d1fae5; color: #065f46; }
+.pill.blue { background: #e0f2fe; color: #075985; }
+.pill.amber { background: #fef3c7; color: #92400e; }
+.pill.red { background: #fee2e2; color: #991b1b; }
+.modchip { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; }
+.err { border-radius: 12px; }
+.ok { background: #ecfdf5; border-color: #a7f3d0; color: #065f46; border-radius: 12px; }
+
+/* ---- Login: deep cyan → emerald living gradient ---- */
+.loginwrap { background: linear-gradient(140deg, #082f3f 0%, #0e7490 55%, #059669 135%); }
+.loginwrap::before { background: #22d3ee; }
+.loginwrap::after { background: #34d399; }
+.logincard {
+  background: rgba(255, 255, 255, .94);
+  border: 1px solid rgba(255, 255, 255, .65);
+  border-radius: 24px;
+  box-shadow: var(--shadow-lg);
+}
+.loginmark { background: linear-gradient(135deg, var(--btn-a), var(--btn-b)); box-shadow: 0 6px 16px rgba(8, 145, 178, .38); border-radius: 11px; }
+
+/* ---- Modal, toast, misc ---- */
+.modal-back { background: rgba(8, 47, 73, .52); backdrop-filter: blur(3px); }
+.modal-card { border-radius: 22px; box-shadow: var(--shadow-lg); }
+.toast { background: linear-gradient(135deg, #0b3547, #082736); border-left: 5px solid #06b6d4; border-radius: 14px; }
+.toast.err { background: linear-gradient(135deg, #3d1414, #2b0f0f); border-left-color: #dc2626; }
+.slip-preview { border-color: #cfe3e8; border-radius: 12px; }
+:focus-visible { outline: 3px solid rgba(8, 145, 178, .55); outline-offset: 2px; }
+button:focus-visible, .navitem:focus-visible, a:focus-visible { outline-color: var(--teal-dark); }
+* { scrollbar-color: rgba(8, 145, 178, .45) transparent; }
+*::-webkit-scrollbar-thumb { background: rgba(8, 145, 178, .40); border: 2px solid transparent; background-clip: content-box; }
+
+/* ---- Dashboard charts in the new gradient ---- */
+.barval { color: var(--teal-dark); }
+.barfill { background: linear-gradient(180deg, #06b6d4, #0e7490 60%, #0f766e); border-radius: 7px 7px 0 0; }
+.htrack { background: #e3eff2; }
+.hfill { background: linear-gradient(90deg, #0891b2, #059669); }
+
+/* ---- TV board: same dark stage, cyan-fresh glow (full treatment in Phase 5) ---- */
+.tv2-bignum { color: #67e8f9; text-shadow: 0 0 36px rgba(103, 232, 249, .35); }
+.tv2-label, .tv2-sub { color: #7dd3fc; }
+
 /* Dashboard charts (role dashboards) */
 .bars { display: flex; align-items: flex-end; gap: 10px; height: 165px; padding-top: 6px; }
 .bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 4px; min-width: 0; }
@@ -479,3 +637,10 @@ tbody tr:hover { background: #f3faf9; }
 .hfill { height: 100%; background: linear-gradient(90deg, #0f766e, #14b8a6); border-radius: 6px; }
 .hval { font-size: 13px; min-width: 96px; }
 @media (prefers-reduced-motion: no-preference) { .barfill, .hfill { transition: height .4s ease, width .4s ease; } }
+
+/* Theme v5 — chart colors re-asserted last (the chart geometry block
+   above sits after the main v5 layer in this file). */
+.barval { color: #0e7490; }
+.barfill { background: linear-gradient(180deg, #06b6d4, #0e7490 60%, #0f766e); }
+.htrack { background: #e3eff2; }
+.hfill { background: linear-gradient(90deg, #0891b2, #059669); }
