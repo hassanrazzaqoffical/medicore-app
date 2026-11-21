@@ -80,7 +80,7 @@ function NotificationsBell({ profile }) {
   };
   return (
     <div style={{ position: "relative", marginTop: 10 }}>
-      <button className="btn small" style={{ width: "100%" }} onClick={toggle}><SvgIcon name="bell" size={15} />{" "}Notifications{unread > 0 ? ` · ${unread} new` : ""}</button>
+      <button className="btn small" style={{ width: "100%" }} onClick={toggle}><SvgIcon name="bell" size={15} />{" "}Notifications{unread > 0 ? <span style={{ display: "inline-block", minWidth: 18, height: 18, lineHeight: "18px", padding: "0 5px", marginLeft: 6, borderRadius: 999, background: "#dc2626", color: "#fff", fontSize: 11, fontWeight: 700, textAlign: "center", verticalAlign: "middle" }}>{unread}</span> : null}</button>
       {open && (
         <div style={{ position: "absolute", bottom: "calc(100% + 8px)", left: 0, width: 300, maxHeight: 340, overflowY: "auto", background: "#fff", color: "#0f172a", borderRadius: 12, boxShadow: "0 18px 40px rgba(0,0,0,.35)", padding: 12, zIndex: 90, textAlign: "left" }}>
           <b>Notifications</b>
@@ -463,12 +463,16 @@ export default function App() {
           <button key={n.key} className={`navitem ${activePage === n.key ? "active" : ""}`} onClick={() => setPage(n.key)}>{n.icon ? <span className="nic"><AppIcon icon={n.icon} size={18} /></span> : null}{n.label}</button>
         ))}
         <div className="sideuser">
-          {profile?.avatar_url ? <img src={profile.avatar_url} alt="" style={{ width: 34, height: 34, borderRadius: "50%", objectFit: "cover", marginBottom: 4 }} /> : null}
-          <div style={{ fontWeight: 700 }}>{profile?.full_name ?? "…"}</div>
+          {profile?.avatar_url ? <img src={profile.avatar_url} alt="" style={{ width: 28, height: 28, borderRadius: "50%", objectFit: "cover", marginBottom: 4 }} /> : null}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ fontWeight: 700, fontSize: 13.5, flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{profile?.full_name ?? "…"}</div>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: "#0e7490", background: "rgba(8,145,178,.12)", padding: "2px 7px", borderRadius: 999, whiteSpace: "nowrap" }}>{profile?.role ?? ""}</span>
+          </div>
           <div style={{ fontSize: 12 }} className="muted">{profile?.email ?? ""}</div>
-          <div style={{ fontSize: 12 }}>{profile?.role ?? ""}</div>
-          {profile && profile.role !== "super_admin" && <NotificationsBell profile={profile} />}
-          <button className="btn small" style={{ marginTop: 10 }} onClick={() => supabase.auth.signOut()}>Sign out</button>
+          <div className="sidebtns">
+            {profile && profile.role !== "super_admin" && <NotificationsBell profile={profile} />}
+            <button className="btn small" onClick={() => supabase.auth.signOut()}>Sign out</button>
+          </div>
         </div>
       </aside>
       <main className="main">
