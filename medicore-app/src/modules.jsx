@@ -8,7 +8,15 @@ import {
 } from "./catalog.js";
 
 /* ---------------- helpers ---------------- */
-export const todayStr = () => new Date().toISOString().slice(0, 10);
+/* Every "today" in the app is the Asia/Karachi (PKT) calendar day, no
+   matter what timezone the device itself is set to. */
+export const PKT_TZ = "Asia/Karachi";
+export const pktDateStr = (d = new Date()) => new Intl.DateTimeFormat("en-CA", { timeZone: PKT_TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+export const todayStr = () => pktDateStr();
+export const pktDayOf = (iso) => { if (!iso) return ""; const d = new Date(iso); return Number.isNaN(d.getTime()) ? String(iso).slice(0, 10) : pktDateStr(d); };
+export const pktMonthOf = (iso) => pktDayOf(iso).slice(0, 7);
+/* The UTC instant at which the current PKT day began (for created_at filters). */
+export const pktDayStartISO = () => new Date(`${pktDateStr()}T00:00:00+05:00`).toISOString();
 export const rs = (n) => "Rs " + Number(n ?? 0).toLocaleString("en-PK");
 
 /* ---- Phase 3: module gating. The OPTIONAL modules a clinic can switch
@@ -375,17 +383,17 @@ export function Dashboard({ profile }) {
       tol(supabase.from("payroll").select("id").eq("status", "draft")),
       tol(supabase.from("attendance").select("status,late_minutes").eq("attendance_date", day)),
       tol(supabase.from("lab_orders").select("id").eq("status", "pending")),
-      tol(supabase.from("invoices").select("total_amount").eq("invoice_type", "pharmacy").eq("status", "paid").gte("created_at", day)),
+      tol(supabase.from("invoices").select("total_amount").eq("invoice_type", "pharmacy").eq("status", "paid").gte("created_at", pktDayStartISO())),
     ]);
     /* Revenue = money actually RECEIVED today (payments), the same
        basis Finance uses for "Income today" — so the two screens can
        never disagree. (Invoice totals are billing, not collections:
        a credit sale bills today but is collected later.) */
-    const revenueToday = (payments ?? []).filter((p) => String(p.created_at).slice(0, 10) === day)
+    const revenueToday = (payments ?? []).filter((p) => pktDayOf(p.created_at) === day)
       .reduce((s, p) => s + Number(p.amount || 0), 0);
     const medMap = Object.fromEntries((medicines ?? []).map((m) => [m.id, m]));
     const low = (batches ?? []).filter((b) => Number(b.quantity) <= Number(medMap[b.medicine_id]?.reorder_level ?? 10));
-    const in30 = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+    const in30 = pktDateStr(new Date(Date.now() + 30 * 864e5));
     const expired = (batches ?? []).filter((b) => b.expiry_date && b.expiry_date < day && Number(b.quantity) > 0);
     const expiring = (batches ?? []).filter((b) => b.expiry_date && b.expiry_date >= day && b.expiry_date <= in30 && Number(b.quantity) > 0);
     return {
@@ -400,8 +408,18 @@ export function Dashboard({ profile }) {
     };
   }, [tid]);
   const t = data?.tokens ?? [];
-  const days7 = [...Array(7)].map((_, i) => { const d = new Date(Date.now() - (6 - i) * 864e5); return { key: d.toISOString().slice(0, 10), label: d.toLocaleDateString([], { weekday: "short" }) }; });
-  const last7 = days7.map((d) => ({ ...d, total: (data?.payments ?? []).filter((p) => String(p.created_at).slice(0, 10) === d.key).reduce((s2, p) => s2 + Number(p.amount || 0), 0) }));
+  const days7 = [...Array(7)].map((_, i) => { const d = new Date(Date.now() - (6 - i) * 864e5); return { key: pktDateStr(d), label: d.toLocaleDateString("en-US", { weekday: "short", timeZone: PKT_TZ }) }; });
+  const clientLast7 = days7.map((d) => ({ ...d, total: (data?.payments ?? []).filter((p) => pktDayOf(p.created_at) === d.key).reduce((s2, p) => s2 + Number(p.amount || 0), 0) }));
+  /* Headline totals come from the clinic_totals() database function
+     (exact, uncapped) when it is installed; otherwise the client-side
+     figures above are used. */
+  const { data: totals } = useLoad(async () => {
+    const r = await supabase.rpc("clinic_totals");
+    return r.error ? null : r.data;
+  }, [tid]);
+  const last7 = totals?.last7?.length ? totals.last7.map((d) => ({ key: d.date, label: new Date(`${d.date}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", timeZone: PKT_TZ }), total: Number(d.total || 0) })) : clientLast7;
+  const revToday = totals?.income_today != null ? Number(totals.income_today) : data?.revenueToday;
+  const patientsTotal = totals?.active_patients != null ? Number(totals.active_patients) : data?.patients;
   const maxRev = Math.max(1, ...last7.map((d) => d.total));
   const maxTok = Math.max(1, ...(data?.depts ?? []).map((d) => t.filter((x) => x.department_id === d.id).length));
   return (
@@ -409,10 +427,10 @@ export function Dashboard({ profile }) {
       <h2>Welcome, {profile.full_name}</h2>
       <p className="muted" style={{ marginTop: 0 }}>{profile.role.replaceAll("_", " ")} · {todayStr()}</p>
       <div className="grid cols-4">
-        <div className="card"><div className="muted">Patients (clinic)</div><div className="big">{data ? (data.patients ?? 0) : "—"}</div></div>
+        <div className="card"><div className="muted">Patients (clinic)</div><div className="big">{patientsTotal != null ? patientsTotal : "—"}</div></div>
         <div className="card"><div className="muted">Tokens today</div><div className="big">{t.length}</div></div>
         <div className="card"><div className="muted">Waiting now</div><div className="big">{t.filter((x) => x.status === "waiting").length}</div></div>
-        <div className="card"><div className="muted">Revenue today</div><div className="big">{data ? rs(data.revenueToday) : "—"}</div></div>
+        <div className="card"><div className="muted">Revenue today</div><div className="big">{revToday != null ? rs(revToday) : "—"}</div></div>
       </div>
       {data && (
         <div className="grid cols-4" style={{ marginTop: 14 }}>
@@ -603,7 +621,7 @@ export function Tokens({ profile, tvMode = false }) {
         const { data: invs } = await supabase.from("invoices")
           .select("id,invoice_number,total_amount,status,created_at")
           .eq("tenant_id", tid).eq("patient_id", patientId).eq("invoice_type", "opd")
-          .eq("total_amount", fee).gte("created_at", todayStr())
+          .eq("total_amount", fee).gte("created_at", pktDayStartISO())
           .order("created_at", { ascending: false }).limit(1);
         inv = invs?.[0] ?? null;
       }
@@ -1070,8 +1088,8 @@ export function Patients({ profile }) {
       <Notice err={msg.err} ok={msg.ok} />
       <StatCards items={[
         { icon: "🧑", label: "Registered patients", value: data?.total ?? 0 },
-        { icon: "🆕", label: "New today", value: (data?.rows ?? []).filter((x) => String(x.created_at ?? "").slice(0, 10) === todayStr()).length, tone: "blue" },
-        { icon: "📅", label: "New this month", value: (data?.rows ?? []).filter((x) => String(x.created_at ?? "").slice(0, 7) === todayStr().slice(0, 7)).length, tone: "violet" },
+        { icon: "🆕", label: "New today", value: (data?.rows ?? []).filter((x) => pktDayOf(x.created_at) === todayStr()).length, tone: "blue" },
+        { icon: "📅", label: "New this month", value: (data?.rows ?? []).filter((x) => pktMonthOf(x.created_at) === todayStr().slice(0, 7)).length, tone: "violet" },
         { icon: "⚠", label: "Allergies recorded", value: (data?.rows ?? []).filter((x) => x.allergies).length, tone: "amber" },
       ]} />
       {canManage && (
@@ -1143,10 +1161,10 @@ export function CareQueue({ profile, title, variant = "doctor" }) {
     let myLabPending = [], myConsults = 0, bedsOcc = [], wards = [], medsDue = [];
     if (isDoc && myStaffId) {
       myLabPending = await tol(supabase.from("lab_orders").select("id,test_name,patient_id,created_at").eq("ordered_by", myStaffId).eq("status", "pending").order("created_at", { ascending: false }).limit(20));
-      myConsults = (await tol(supabase.from("consultations").select("id").eq("doctor_id", myStaffId).gte("created_at", todayStr()))).length;
+      myConsults = (await tol(supabase.from("consultations").select("id").eq("doctor_id", myStaffId).gte("created_at", pktDayStartISO()))).length;
     }
     if (!isDoc) {
-      const tomorrow = new Date(Date.now() + 864e5).toISOString().slice(0, 10);
+      const tomorrow = pktDateStr(new Date(Date.now() + 864e5));
       [bedsOcc, wards, medsDue] = await Promise.all([
         tol(supabase.from("beds").select("id,bed_number,ward_id,patient_id").not("patient_id", "is", null)),
         tol(supabase.from("wards").select("id,name")),
@@ -1185,7 +1203,7 @@ export function CareQueue({ profile, title, variant = "doctor" }) {
             {(data?.myLabPending ?? []).length === 0 ? <p className="muted" style={{ marginBottom: 0 }}>No lab reports are pending for tests you ordered.</p> : (
               <table><thead><tr><th>Patient</th><th>Test</th><th>Ordered</th></tr></thead><tbody>
                 {(data?.myLabPending ?? []).map((o) => { const p = pName(o.patient_id); return (
-                  <tr key={o.id}><td><b>{p?.full_name ?? "—"}</b> <span className="muted">{p?.mr_number ?? ""}</span></td><td>{o.test_name}</td><td>{String(o.created_at ?? "").slice(0, 10)}</td></tr> ); })}
+                  <tr key={o.id}><td><b>{p?.full_name ?? "—"}</b> <span className="muted">{p?.mr_number ?? ""}</span></td><td>{o.test_name}</td><td>{pktDayOf(o.created_at)}</td></tr> ); })}
               </tbody></table>
             )}
           </div>
@@ -1288,7 +1306,7 @@ export function Pharmacy({ profile }) {
     /* Dashboard extras — tolerant reads, same reasoning as CareQueue. */
     const tol = (pr) => pr.then((r) => r.data ?? []).catch(() => []);
     const [salesToday, pendRx, rxPatients, dir] = await Promise.all([
-      tol(supabase.from("invoices").select("id,total_amount,created_at").eq("invoice_type", "pharmacy").gte("created_at", todayStr())),
+      tol(supabase.from("invoices").select("id,total_amount,created_at").eq("invoice_type", "pharmacy").gte("created_at", pktDayStartISO())),
       tol(supabase.from("prescriptions").select("id,patient_id,doctor_id,created_at").eq("status", "pending").order("created_at", { ascending: false }).limit(20)),
       tol(supabase.from("patients").select("id,full_name,mr_number")),
       tol(supabase.from("staff_directory").select("id,full_name")),
@@ -1425,9 +1443,24 @@ export function Pharmacy({ profile }) {
         throw e;
       }
       if (!credit) {
-        await q(supabase.from("payments").insert({
-          tenant_id: tid, invoice_id: inv.id, amount: cartTotal, payment_method: payMethod, received_by: profile.id,
-        }));
+        /* If the payment cannot be recorded, the whole sale is rolled
+           back — movements removed, batch quantities restored, invoice
+           deleted — so a failed sale never half-posts. (The payments
+           policy requires received_by = the signed-in user, which the
+           insert below always sets.) */
+        try {
+          await q(supabase.from("payments").insert({
+            tenant_id: tid, invoice_id: inv.id, amount: cartTotal, payment_method: payMethod, received_by: profile.id,
+          }));
+        } catch (e) {
+          await supabase.from("stock_movements").delete().eq("reference_id", inv.id);
+          for (const l of cart) {
+            const cur = await supabase.from("medicine_batches").select("quantity").eq("id", l.batch_id).maybeSingle();
+            if (cur.data) await supabase.from("medicine_batches").update({ quantity: Number(cur.data.quantity || 0) + l.qty }).eq("id", l.batch_id);
+          }
+          await supabase.from("invoices").delete().eq("id", inv.id);
+          throw e;
+        }
       }
       const sale = { invNo, lines: cart, subtotal, discount: discAmt, total: cartTotal, payMethod };
       setLastSale(sale);
@@ -1437,7 +1470,7 @@ export function Pharmacy({ profile }) {
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
   }
-  const soon = new Date(Date.now() + 60 * 864e5).toISOString().slice(0, 10);
+  const soon = pktDateStr(new Date(Date.now() + 60 * 864e5));
   const today = todayStr();
   return (
     <div>
@@ -1447,7 +1480,7 @@ export function Pharmacy({ profile }) {
         { icon: "💊", label: "Products in stock list", value: (data?.meds ?? []).length },
         { icon: "📦", label: "Total stock (units)", value: (data?.batches ?? []).reduce((a, b) => a + (Number(b.quantity) || 0), 0), tone: "blue" },
         { icon: "⚠", label: "Low / out of stock", value: (data?.meds ?? []).filter((m) => (data?.batches ?? []).filter((b) => b.medicine_id === m.id).reduce((a, b) => a + (Number(b.quantity) || 0), 0) <= 10).length, tone: "amber" },
-        { icon: "⏰", label: "Expiring in 30 days", value: (data?.batches ?? []).filter((b) => Number(b.quantity) > 0 && b.expiry_date >= todayStr() && b.expiry_date <= new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10)).length, tone: "violet" },
+        { icon: "⏰", label: "Expiring in 30 days", value: (data?.batches ?? []).filter((b) => Number(b.quantity) > 0 && b.expiry_date >= todayStr() && b.expiry_date <= pktDateStr(new Date(Date.now() + 30 * 864e5))).length, tone: "violet" },
       ]} />
       <div className="card" style={{ marginBottom: 14 }}>
         <h3 style={{ marginTop: 0 }}>Today at the pharmacy</h3>
@@ -1460,7 +1493,7 @@ export function Pharmacy({ profile }) {
             <thead><tr><th>Patient</th><th>Doctor</th><th>Date</th><th>Status</th></tr></thead>
             <tbody>
               {(data?.pendRx ?? []).map((r) => { const pt = (data?.rxPatients ?? []).find((px) => px.id === r.patient_id); const dc = (data?.dir ?? []).find((sx) => sx.id === r.doctor_id); return (
-                <tr key={r.id}><td><b>{pt?.full_name ?? "—"}</b> <span className="muted">{pt?.mr_number ?? ""}</span></td><td>{dc?.full_name ?? "—"}</td><td>{String(r.created_at ?? "").slice(0, 10)}</td><td><span className="pill amber">pending</span></td></tr> ); })}
+                <tr key={r.id}><td><b>{pt?.full_name ?? "—"}</b> <span className="muted">{pt?.mr_number ?? ""}</span></td><td>{dc?.full_name ?? "—"}</td><td>{pktDayOf(r.created_at)}</td><td><span className="pill amber">pending</span></td></tr> ); })}
             </tbody>
           </table>
         )}
@@ -1648,7 +1681,7 @@ export function Finance({ profile }) {
   };
   const staffById = new Map((data?.dir ?? []).map((x) => [x.id, x]));
   const salaryDebits = (data?.payroll ?? []).filter((r) => r.status === "paid").map((r) => ({
-    key: "s" + r.id, date: String(r.paid_at ?? r.updated_at ?? "").slice(0, 10), ts: new Date(r.paid_at ?? r.updated_at ?? 0).getTime() || 0,
+    key: "s" + r.id, date: pktDayOf(r.paid_at ?? r.updated_at), ts: new Date(r.paid_at ?? r.updated_at ?? 0).getTime() || 0,
     desc: `Salary — ${staffById.get(r.staff_id)?.full_name ?? "Staff"} (${monthLabel(`${r.period_year}-${String(r.period_month ?? "").padStart(2, "0")}`)})`,
     sub: "", via: "Payroll", credit: 0, debit: Number(r.net_salary) || 0,
   }));
@@ -1669,8 +1702,12 @@ export function Finance({ profile }) {
       reload();
     } catch (e) { setMsg({ err: e.message, ok: "" }); }
   }
+  const { data: totals } = useLoad(async () => {
+    const r = await supabase.rpc("clinic_totals");
+    return r.error ? null : r.data;
+  }, [tid]);
   const credits = (data?.pay ?? []).map((p) => { const inv = invById.get(p.invoice_id); return {
-    key: "p" + p.id, date: String(p.paid_at ?? p.created_at ?? "").slice(0, 10), ts: new Date(p.paid_at ?? p.created_at ?? 0).getTime() || 0,
+    key: "p" + p.id, date: pktDayOf(p.paid_at ?? p.created_at), ts: new Date(p.paid_at ?? p.created_at ?? 0).getTime() || 0,
     desc: inv ? `${inv.invoice_type.toUpperCase()} fee — ${shortInvoice(inv, finCtx)}` : "Payment received", sub: p.reference_no ?? "",
     via: p.payment_method ?? "cash", credit: Number(p.amount) || 0, debit: 0,
   }; });
@@ -1689,6 +1726,13 @@ export function Finance({ profile }) {
   const monthCredit = credits.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.credit, 0);
   const expAll = [...debits, ...salaryDebits];
   const todayDebit = expAll.filter((e) => e.date === todayStr()).reduce((a, e) => a + e.debit, 0);
+  /* Headline income/expense totals prefer the clinic_totals() database
+     function (exact over ALL rows); the ledger figures above are the
+     fallback when the function is not installed. */
+  const incToday = totals?.income_today != null ? Number(totals.income_today) : todayCredit;
+  const incMonth = totals?.income_month != null ? Number(totals.income_month) : monthCredit;
+  const expToday = totals?.expenses_today != null ? Number(totals.expenses_today) : todayDebit;
+  const expMonth = totals?.expenses_month != null ? Number(totals.expenses_month) : monthDebit;
   const monthDebit = expAll.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.debit, 0);
   /* Category breakdown: income grouped by invoice type (paid
      invoices), expenses grouped by category — paid salaries count
@@ -1701,7 +1745,7 @@ export function Finance({ profile }) {
   /* Income by category is grouped from PAYMENTS RECEIVED (matched to
      their invoice's type) — the same basis as "Income today" above,
      so the category rows and the headline totals reconcile (Module 7). */
-  const sumInv = (types, when) => (data?.pay ?? []).filter((p) => { const inv = invById.get(p.invoice_id); return inv && types.includes(inv.invoice_type) && when(String(p.created_at).slice(0, 10)); }).reduce((a, p) => a + (Number(p.amount) || 0), 0);
+  const sumInv = (types, when) => (data?.pay ?? []).filter((p) => { const inv = invById.get(p.invoice_id); return inv && types.includes(inv.invoice_type) && when(pktDayOf(p.created_at)); }).reduce((a, p) => a + (Number(p.amount) || 0), 0);
   const expCatOf = (via) => { const v = String(via ?? "").toLowerCase(); if (v.includes("salar") || v === "payroll") return "Salary"; if (v.includes("rent")) return "Rent"; if (v.includes("util")) return "Utilities"; if (v.includes("medicine") || v.includes("purchase")) return "Medicine Purchase"; if (v.includes("equip")) return "Equipment"; if (v.includes("maint")) return "Maintenance"; return "Other"; };
   const expCats = ["Salary", "Rent", "Utilities", "Medicine Purchase", "Equipment", "Maintenance", "Other"];
   const sumExp = (cat, when) => expAll.filter((e) => expCatOf(e.via) === cat && when(e.date)).reduce((a, e) => a + e.debit, 0);
@@ -1726,10 +1770,10 @@ export function Finance({ profile }) {
       <p className="muted" style={{ marginTop: -6 }}>Accounts — money in (Credit), money out (Debit), and the running balance.</p>
       <Notice err={msg.err} ok={msg.ok} />
       <StatCards items={[
-        { icon: "💰", label: "Income today", value: rs(todayCredit) },
-        { icon: "🗓️", label: "Income this month", value: rs(monthCredit), tone: "blue" },
-        { icon: "💸", label: "Expenses today", value: rs(todayDebit), tone: "amber" },
-        { icon: "📉", label: "Expenses this month", value: rs(monthDebit), tone: "violet" },
+        { icon: "💰", label: "Income today", value: rs(incToday) },
+        { icon: "🗓️", label: "Income this month", value: rs(incMonth), tone: "blue" },
+        { icon: "💸", label: "Expenses today", value: rs(expToday), tone: "amber" },
+        { icon: "📉", label: "Expenses this month", value: rs(expMonth), tone: "violet" },
       ]} />
       <p className="muted" style={{ marginTop: 0 }}>Overall net balance (all loaded entries): <b>{rs(totCredit - totDebit)}</b> · Total received {rs(totCredit)} · Total out {rs(totDebit)} · Salary approvals waiting: <b>{pendingSlips.length}</b></p>
       <div className="card" style={{ marginBottom: 14 }}>
@@ -1815,7 +1859,7 @@ export function Finance({ profile }) {
         <table>
           <thead><tr><th>Number</th><th>Type</th><th>Total</th><th>Paid</th><th>Status</th><th>Date</th><th>Print</th></tr></thead>
           <tbody>
-            {(data?.inv ?? []).map((i) => <tr key={i.id}><td><b>{shortInvoice(i, finCtx)}</b><br /><span className="muted" style={{ fontSize: 11 }}>{i.invoice_number}</span></td><td>{i.invoice_type}</td><td>{rs(i.total_amount)}</td><td>{rs(i.amount_paid)}</td><td><span className={`pill ${i.status === "paid" ? "green" : "amber"}`}>{i.status}</span></td><td>{String(i.created_at).slice(0, 10)}</td><td><button className="btn small ghost" onClick={() => printReceipt?.({
+            {(data?.inv ?? []).map((i) => <tr key={i.id}><td><b>{shortInvoice(i, finCtx)}</b><br /><span className="muted" style={{ fontSize: 11 }}>{i.invoice_number}</span></td><td>{i.invoice_type}</td><td>{rs(i.total_amount)}</td><td>{rs(i.amount_paid)}</td><td><span className={`pill ${i.status === "paid" ? "green" : "amber"}`}>{i.status}</span></td><td>{pktDayOf(i.created_at)}</td><td><button className="btn small ghost" onClick={() => printReceipt?.({
               title: "Invoice",
               lines: [
                 { k: "Number", v: shortInvoice(i, finCtx) },
@@ -1825,7 +1869,7 @@ export function Finance({ profile }) {
                 { k: "Total", v: rs(i.total_amount) },
                 { k: "Paid", v: rs(i.amount_paid) },
                 { k: "Status", v: i.status },
-                { k: "Date", v: String(i.created_at).slice(0, 10) },
+                { k: "Date", v: pktDayOf(i.created_at) },
               ],
             })}>Print</button></td></tr>)}
           </tbody>
@@ -1860,7 +1904,7 @@ export function HR({ profile, session }) {
     const [depts, leaveAll, rosterAll, payrollAll] = await Promise.all([
       tol(supabase.from("departments").select("id,name,is_active").order("name")),
       tol(supabase.from("leave_requests").select("*").order("created_at", { ascending: false }).limit(50)),
-      tol(supabase.from("duty_roster").select("*").gte("roster_date", new Date(Date.now() - 864e5).toISOString().slice(0, 10)).order("roster_date").limit(100)),
+      tol(supabase.from("duty_roster").select("*").gte("roster_date", pktDateStr(new Date(Date.now() - 864e5))).order("roster_date").limit(100)),
       tol(supabase.from("payroll").select("*").order("period_year", { ascending: false }).order("period_month", { ascending: false }).limit(200)),
     ]);
     const advRes = await supabase.from("staff_advances").select("*").order("advance_date", { ascending: false }).limit(100).then((r) => r).catch(() => ({ data: null, error: { message: "unavailable" } }));
@@ -2545,10 +2589,10 @@ export function Lab({ profile }) {
       <h2>Lab Orders</h2>
       <Notice err={msg.err || err} ok={msg.ok} />
       <StatCards items={[
-        { icon: "🧪", label: "Orders today", value: rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).length },
+        { icon: "🧪", label: "Orders today", value: rows.filter((r) => pktDayOf(r.created_at) === todayStr()).length },
         { icon: "⏳", label: "Pending", value: rows.filter((r) => r.status === "pending").length, tone: "amber" },
         { icon: "✅", label: "Done / reported", value: rows.filter((r) => r.status !== "pending").length, tone: "blue" },
-        { icon: "💰", label: "Lab income today", value: rs(rows.filter((r) => String(r.created_at ?? "").slice(0, 10) === todayStr()).reduce((a, r) => a + (Number(r.fee_pkr) || 0), 0)), tone: "violet" },
+        { icon: "💰", label: "Lab income today", value: rs(rows.filter((r) => pktDayOf(r.created_at) === todayStr()).reduce((a, r) => a + (Number(r.fee_pkr) || 0), 0)), tone: "violet" },
       ]} />
       <div className="card">
         {rows.length === 0 ? <p className="muted">No lab orders yet. Doctors order tests from the consultation panel.</p> : (
@@ -2558,7 +2602,7 @@ export function Lab({ profile }) {
               <tbody>
                 {rows.map((r) => { const pt = patById.get(r.patient_id); const res = resultByOrder.get(r.id); return (
                   <tr key={r.id}>
-                    <td>{String(r.created_at ?? "").slice(0, 10)}</td>
+                    <td>{pktDayOf(r.created_at)}</td>
                     <td><b>{pt?.full_name ?? "—"}</b> <span className="muted">{pt?.mr_number ?? ""}</span></td>
                     <td>{r.test_name}</td>
                     <td>{rs(r.fee_pkr ?? 0)}</td>
@@ -2573,7 +2617,7 @@ export function Lab({ profile }) {
                           { k: "Patient", v: pt?.full_name ?? "—" },
                           { k: "Test", v: r.test_name },
                           { k: "Fee", v: rs(r.fee_pkr ?? 0) },
-                          { k: "Date", v: String(r.created_at ?? "").slice(0, 10) },
+                          { k: "Date", v: pktDayOf(r.created_at) },
                         ],
                       })}>Print order</button>}
                       <button className="btn small ghost" onClick={() => { const inv = invForOrder(r); const fee = Number(r.fee_pkr) || 0; const paidAmt = Number(inv?.amount_paid) || 0; printReceipt?.({
@@ -2726,7 +2770,7 @@ export function Operations({ profile }) {
       <h2>Operations (OT)</h2>
       <Notice err={msg.err} ok={msg.ok} />
       <StatCards items={[
-        { icon: "🏥", label: "Operations today", value: rows.filter((o) => String(o.scheduled_at ?? "").slice(0, 10) === todayStr()).length },
+        { icon: "🏥", label: "Operations today", value: rows.filter((o) => pktDayOf(o.scheduled_at) === todayStr()).length },
         { icon: "🗓️", label: "Scheduled", value: rows.filter((o) => o.status === "scheduled").length, tone: "amber" },
         { icon: "🔄", label: "In progress", value: rows.filter((o) => o.status === "in_progress").length, tone: "blue" },
         { icon: "✅", label: "Completed", value: rows.filter((o) => o.status === "completed").length, tone: "violet" },
@@ -3952,7 +3996,7 @@ export function PlatformTenants({ session }) {
       const start = new Date(); const end = new Date(start);
       if (planForCreate.billing_cycle === "yearly") end.setFullYear(end.getFullYear() + 1);
       else end.setMonth(end.getMonth() + 1);
-      const iso = (d) => d.toISOString().slice(0, 10);
+      const iso = (d) => pktDateStr(d);
       try {
         await q(supabase.from("subscriptions").insert({
           tenant_id: tenantId, plan_id: planForCreate.id, status: "active",
@@ -4726,7 +4770,7 @@ export function CatalogImport({ cats, meds, prods, profile, onDone }) {
           {(batches ?? []).map((b) => (
             <tr key={b.id}>
               <td>{b.file_name ?? "—"}</td>
-              <td>{String(b.created_at ?? "").slice(0, 10)}</td>
+              <td>{pktDayOf(b.created_at)}</td>
               <td>{b.total_rows}</td><td>{b.inserted_count}</td><td>{b.duplicate_count}</td><td>{b.rejected_count}</td>
               <td>{b.status === "rolled_back"
                 ? <span className="pill" style={{ background: "#fee2e2", color: "#991b1b" }}>Rolled back</span>
@@ -5473,7 +5517,7 @@ export function paySlipDoc(name, role, r) {
       { k: "Deductions", v: rs(r.deductions ?? 0) },
       { k: "Net pay", v: rs(net) },
       { k: "Status", v: r.status ?? "" },
-      ...(r.paid_at ? [{ k: "Paid date", v: String(r.paid_at).slice(0, 10) }] : []),
+      ...(r.paid_at ? [{ k: "Paid date", v: pktDayOf(r.paid_at) }] : []),
     ],
   };
 }
@@ -5669,7 +5713,7 @@ export function MyProfile({ profile }) {
                       <td>{rs(r.deductions ?? 0)}</td>
                       <td><b>{rs(r.net_salary || ((r.basic_salary ?? 0) + (r.allowances ?? 0) - (r.deductions ?? 0) - (r.late_deduction ?? 0) - (r.absent_deduction ?? 0)))}</b></td>
                       <td><span className={`pill ${r.status === "paid" ? "green" : "amber"}`}>{payrollStatusLabel(r.status)}</span></td>
-                      <td>{r.paid_at ? String(r.paid_at).slice(0, 10) : "—"}</td>
+                      <td>{r.paid_at ? pktDayOf(r.paid_at) : "—"}</td>
                       <td><button className="btn small ghost" onClick={() => printReceipt?.(paySlipDoc(staff.full_name, staff.role, r))}>Print</button></td>
                     </tr>
                   ))}

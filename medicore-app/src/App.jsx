@@ -7,7 +7,7 @@ import {
   PlatformCatalog,
   PrintProvider, ToastProvider, moduleEnabled,
   SvgIcon, AppIcon,
-  MyProfile,
+  MyProfile, todayStr,
 } from "./modules.jsx";
 
 /* PRIVACY LOCKDOWN: super_admin appears ONLY in the five platform
@@ -304,7 +304,7 @@ export default function App() {
           .select("*").eq("tenant_id", profile.tenant_id)
           .order("ends_on", { ascending: false }).limit(1);
         if (!live) return;
-        const today = new Date().toISOString().slice(0, 10);
+        const today = todayStr();
         if (tenant && tenant.status === "suspended") {
           setSubBlock({ clinic: tenant.name, reason: "suspended", endsOn: subs?.[0]?.ends_on ?? null });
         } else if (!subErr && subs && subs.length) {
