@@ -664,5 +664,14 @@ button:focus-visible, .navitem:focus-visible, a:focus-visible { outline-color: v
     overflow-y: auto; overflow-x: hidden;
   }
   .sidebar .brand, .sidebar .navsec, .sidebar .navitem { flex-shrink: 0; }
-  .sidebar .sideuser { margin-top: auto; flex-shrink: 0; }
+  /* margin-top:auto pins it when the rail has spare room; position:sticky
+     bottom:0 keeps it visible even when the nav list is taller than the
+     window (short screens / high zoom) and the rail itself scrolls. */
+  .sidebar .sideuser {
+    margin-top: auto; flex-shrink: 0; position: sticky; bottom: 0; z-index: 2;
+    /* Solid fill while stuck: the glass tint would let the scrolling nav
+       text show through the card. */
+    background: linear-gradient(180deg, #f0f8f9, #e4f2f4);
+    box-shadow: 0 -10px 24px rgba(8, 80, 100, .10), 0 10px 24px rgba(8, 145, 178, .10);
+  }
 }
