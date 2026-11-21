@@ -1726,6 +1726,7 @@ export function Finance({ profile }) {
   const monthCredit = credits.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.credit, 0);
   const expAll = [...debits, ...salaryDebits];
   const todayDebit = expAll.filter((e) => e.date === todayStr()).reduce((a, e) => a + e.debit, 0);
+  const monthDebit = expAll.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.debit, 0);
   /* Headline income/expense totals prefer the clinic_totals() database
      function (exact over ALL rows); the ledger figures above are the
      fallback when the function is not installed. */
@@ -1733,7 +1734,6 @@ export function Finance({ profile }) {
   const incMonth = totals?.income_month != null ? Number(totals.income_month) : monthCredit;
   const expToday = totals?.expenses_today != null ? Number(totals.expenses_today) : todayDebit;
   const expMonth = totals?.expenses_month != null ? Number(totals.expenses_month) : monthDebit;
-  const monthDebit = expAll.filter((e) => e.date.startsWith(monthKey)).reduce((a, e) => a + e.debit, 0);
   /* Category breakdown: income grouped by invoice type (paid
      invoices), expenses grouped by category — paid salaries count
      under Salary (their ledger "via" is Payroll). Older free-text

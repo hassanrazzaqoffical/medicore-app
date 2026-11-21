@@ -644,3 +644,25 @@ button:focus-visible, .navitem:focus-visible, a:focus-visible { outline-color: v
 .barfill { background: linear-gradient(180deg, #06b6d4, #0e7490 60%, #0f766e); }
 .htrack { background: #e3eff2; }
 .hfill { background: linear-gradient(90deg, #0891b2, #059669); }
+
+/* ============================ THEME v5.1 ============================
+   Sidebar footer fix (Hassan, 2026-11-21): the user card is compact
+   and pinned to the bottom of the sidebar — the sidebar itself is a
+   full-height sticky rail, the nav scrolls inside it, and the card
+   never moves. Screen-only; print and receipt rules untouched. */
+.sideuser {
+  padding: 10px;
+  border-top: 1px solid rgba(8, 145, 178, .18);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.sideuser .btn { padding: 6px 10px; font-size: 13px; }
+@media (min-width: 901px) {
+  .sidebar {
+    position: sticky; top: 0; height: 100vh;
+    display: flex; flex-direction: column;
+    overflow-y: auto; overflow-x: hidden;
+  }
+  .sidebar .brand, .sidebar .navsec, .sidebar .navitem { flex-shrink: 0; }
+  .sidebar .sideuser { margin-top: auto; flex-shrink: 0; }
+}
